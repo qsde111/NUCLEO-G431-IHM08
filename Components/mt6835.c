@@ -31,7 +31,7 @@ uint32_t Mt6835_ReadRaw21(Mt6835 *ctx)
     {
         (void)ctx->bus.transfer8(ctx->bus.user, MT6835_STREAM_CMD_H);
         (void)ctx->bus.transfer8(ctx->bus.user, MT6835_STREAM_CMD_L);
-        ctx->stream_started = 1U;
+        ctx->stream_started = 0U;
     }
 
     b20_13 = ctx->bus.transfer8(ctx->bus.user, 0x00U);
