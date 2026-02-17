@@ -1,0 +1,36 @@
+# 忽略编译生成的临时文件夹
+Debug/
+Release/
+build/
+Bin/
+Obj/
+
+# 忽略编译产物
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.d
+
+# 忽略 CubeIDE/Eclipse 的本地配置（因人而异，建议保留 .project 和 .cproject，但忽略个人设置）
+.settings/
+*.launch
+
+# 忽略 CubeMX 产生的备份
+*.bak
+# 现有的配置保持不变...
+
+# 新增建议：Windows 产生的垃圾缩略图
+Thumbs.db
+Desktop.ini
+
+# 新增建议：防止不小心上传可执行程序（最高风险文件）
+*.exe
+*.dll
+*.so
+
+# 新增建议：VS Code 或 Cursor 如果你混用的话，产生的配置文件夹
+.vscode/
