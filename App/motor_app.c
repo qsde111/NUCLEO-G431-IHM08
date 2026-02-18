@@ -4,27 +4,57 @@
 
 #include <string.h>
 
-#define MOTORAPP_POLE_CALIB_CCR (80u)
+#define MOTORAPP_POLE_CALIB_CCR (300u)
 
-static void MotorApp_PwmAllOff(void)
+static void MotorApp_PwmStartAllOnce(MotorApp *ctx)
 {
+    if ((ctx == 0) || (ctx->pwm_channels_started != 0u))
+    {
+        return;
+    }
+
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
-    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
-    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+    if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-    (void)HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
-    (void)HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
-    (void)HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_3);
-
-    __HAL_TIM_MOE_DISABLE(&htim1);
-    __HAL_TIM_DISABLE(&htim1);
+    ctx->pwm_channels_started = 1u;
 }
 
-static void MotorApp_PwmPoleCalibStart(uint32_t ccr_u)
+static void MotorApp_PwmAllOff(MotorApp *ctx)
+{
+    MotorApp_PwmStartAllOnce(ctx);
+    __HAL_TIM_MOE_DISABLE(&htim1);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+}
+
+static void MotorApp_PwmPoleCalibStart(MotorApp *ctx, uint32_t ccr_u)
 {
     const uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim1);
     if (ccr_u > arr)
@@ -32,19 +62,10 @@ static void MotorApp_PwmPoleCalibStart(uint32_t ccr_u)
         ccr_u = arr;
     }
 
-    MotorApp_PwmAllOff();
+    MotorApp_PwmStartAllOnce(ctx);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_u);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-
-    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-
-    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
-    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
-    (void)HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
-
     __HAL_TIM_MOE_ENABLE(&htim1);
 }
 
@@ -71,8 +92,9 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->last_stream_tick_ms = HAL_GetTick();
     ctx->pole_calib_enabled = 0;
     ctx->pole_calib_pwm_running = 0;
+    ctx->pwm_channels_started = 0;
 
-    MotorApp_PwmAllOff();
+    MotorApp_PwmAllOff(ctx);
 }
 
 void MotorApp_SetPoleCalibEnabled(MotorApp *ctx, uint8_t enabled)
@@ -91,13 +113,13 @@ void MotorApp_SetPoleCalibEnabled(MotorApp *ctx, uint8_t enabled)
 
     if (enabled)
     {
-        MotorApp_PwmPoleCalibStart(MOTORAPP_POLE_CALIB_CCR);
+        MotorApp_PwmPoleCalibStart(ctx, MOTORAPP_POLE_CALIB_CCR);
         ctx->pole_calib_pwm_running = 1;
         ctx->last_stream_tick_ms = (uint32_t)(HAL_GetTick() - 1u);
     }
     else
     {
-        MotorApp_PwmAllOff();
+        MotorApp_PwmAllOff(ctx);
         ctx->pole_calib_pwm_running = 0;
         ctx->last_stream_tick_ms = HAL_GetTick();
     }

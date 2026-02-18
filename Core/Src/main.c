@@ -98,12 +98,16 @@ int main(void)
     MX_DMA_Init();
     MX_LPUART1_UART_Init();
     MX_CORDIC_Init();
-    MX_SPI3_Init();
-    MX_TIM1_Init();
-    /* USER CODE BEGIN 2 */
+  MX_SPI3_Init();
+  MX_TIM1_Init();
+  /* USER CODE BEGIN 2 */
     MotorApp_Init(&g_motor_app, &hlpuart1, &hspi3, MT6835_CS_GPIO_Port, MT6835_CS_Pin);
+    g_pole_calib_enabled = 0u;
+    g_button_last_tick_ms = HAL_GetTick();
+    __HAL_GPIO_EXTI_CLEAR_IT(B1_User_Pin);
+    MotorApp_SetPoleCalibEnabled(&g_motor_app, 0u);
 
-    /* USER CODE END 2 */
+  /* USER CODE END 2 */
 
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
@@ -170,9 +174,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     {
         return;
     }
+    if (HAL_GPIO_ReadPin(B1_User_GPIO_Port, B1_User_Pin) != GPIO_PIN_SET)
+    {
+        return;
+    }
 
     const uint32_t now = HAL_GetTick();
-    if ((uint32_t)(now - g_button_last_tick_ms) < 50u)
+    if ((uint32_t)(now - g_button_last_tick_ms) < 80u)
     {
         return;
     }
