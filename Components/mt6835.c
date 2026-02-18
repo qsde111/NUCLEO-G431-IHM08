@@ -37,7 +37,7 @@ uint32_t Mt6835_ReadRaw21(Mt6835 *ctx)
     b20_13 = ctx->bus.transfer8(ctx->bus.user, 0x00U);
     b12_5 = ctx->bus.transfer8(ctx->bus.user, 0x00U);
     b4_0_status = ctx->bus.transfer8(ctx->bus.user, 0x00U);
-    (void)ctx->bus.transfer8(ctx->bus.user, 0x00U);
+    // (void)ctx->bus.transfer8(ctx->bus.user, 0x00U);
 
     ctx->bus.cs_high(ctx->bus.user);
 

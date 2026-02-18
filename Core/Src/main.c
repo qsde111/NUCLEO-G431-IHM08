@@ -22,6 +22,7 @@
 #include "dma.h"
 #include "gpio.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -49,6 +50,8 @@
 
 /* USER CODE BEGIN PV */
 static MotorApp g_motor_app;
+static volatile uint8_t g_pole_calib_enabled;
+static volatile uint32_t g_button_last_tick_ms;
 
 /* USER CODE END PV */
 
@@ -96,6 +99,7 @@ int main(void)
     MX_LPUART1_UART_Init();
     MX_CORDIC_Init();
     MX_SPI3_Init();
+    MX_TIM1_Init();
     /* USER CODE BEGIN 2 */
     MotorApp_Init(&g_motor_app, &hlpuart1, &hspi3, MT6835_CS_GPIO_Port, MT6835_CS_Pin);
 
@@ -108,6 +112,7 @@ int main(void)
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
+        MotorApp_SetPoleCalibEnabled(&g_motor_app, (uint8_t)g_pole_calib_enabled);
         MotorApp_Loop(&g_motor_app);
     }
     /* USER CODE END 3 */
@@ -158,6 +163,23 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin != B1_User_Pin)
+    {
+        return;
+    }
+
+    const uint32_t now = HAL_GetTick();
+    if ((uint32_t)(now - g_button_last_tick_ms) < 50u)
+    {
+        return;
+    }
+    g_button_last_tick_ms = now;
+
+    g_pole_calib_enabled ^= 1u;
+}
 
 /* USER CODE END 4 */
 
