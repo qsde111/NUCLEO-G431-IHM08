@@ -93,3 +93,11 @@
 - 修复策略：**保持 CCxE/CCxNE 使能，让引脚始终被 TIM1 驱动**；启停只通过 BDTR.MOE 门控，并利用 CubeMX 已配置的 OSSI/OSSR + IdleState（CHx idle=RESET，CHxN idle=SET）实现“空闲=上桥臂低/下桥臂高”。
 - 代码：新增 `BspTim1Pwm_ArmIdleOutputs()`；并在 `BspTim1Pwm_StartTrigger()` 里自动执行一次（上电启动 TRGO2 后立刻把 6PWM 引脚拉到 Idle）；`BspTim1Pwm_DisableOutputs()` 改为 `__HAL_TIM_MOE_DISABLE_UNCONDITIONALLY()`（不再 Stop 通道）。
 - 预期观测：上电空闲与校准结束后，CH1/2/3=低电平，CH1N/2N/3N=高电平；下发 `C1` 才出现 PWM。
+
+### 2026-02-20：电流采样（Ia/Ib）上电 offset + 单位换算框架
+
+- 目标：先把 **ADC 原始值 -> 去偏置 -> 物理电流(A)** 这条链路跑通，后面再接入电流环（PI + SVPWM）。
+- offset：上电后在 **PWM 输出未使能**（MOE=0，空闲态）期间累计 1000 次注入采样（20kHz -> 约 50ms）求平均，作为 `offset_raw`。
+- 换算：`I[A] = (raw - offset_raw) * (Vref/ADCmax) / (Rshunt * Gain)`；当前常量：`Rshunt=0.01Ω`，`Gain=5.18`，`Vref=3.3V`，`ADCmax=4095`。
+- 分层：新增纯组件 `Components/current_sense.h`（无 HAL 依赖）实现 offset 累计与换算；`App/motor_app.c` 在 ADC ISR 中推样本并更新 `ia_a/ib_a`。
+- 打印：新增 HostCmd `D1` 切到“电流页”JustFloat 输出：offset 未就绪时发 `rawA/rawB/avgA/avgB`；就绪后发 `Ia/Ib/offsetA/offsetB`（`D0` 回到原来的 encoder/校准页）。

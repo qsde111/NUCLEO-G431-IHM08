@@ -6,6 +6,7 @@
 #include "bsp_adc_inj_pair.h"
 #include "bsp_tim1_pwm.h"
 #include "host_cmd_app.h"
+#include "current_sense.h"
 #include "justfloat.h"
 #include "motor_calib.h"
 #include "mt6835.h"
@@ -27,6 +28,9 @@ typedef struct
 
     uint16_t adc1_raw;
     uint16_t adc2_raw;
+    CurrentSenseOffset2 i_ab_offset;
+    float ia_a;
+    float ib_a;
 
     uint32_t adc_isr_count;
     uint8_t dbg_calib_state;
@@ -52,6 +56,7 @@ typedef struct
     uint8_t calib_fail;
 
     uint8_t tx_debug_toggle;
+    uint8_t stream_page;
 } MotorApp;
 
 void MotorApp_Init(MotorApp *ctx,

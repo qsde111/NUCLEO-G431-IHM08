@@ -10,6 +10,26 @@
 #define MOTORAPP_CTRL_HZ (20000.0f)
 #endif
 
+#ifndef MOTORAPP_ADC_MAX_COUNTS
+#define MOTORAPP_ADC_MAX_COUNTS (4095.0f)
+#endif
+
+#ifndef MOTORAPP_ADC_VREF_V
+#define MOTORAPP_ADC_VREF_V (3.3f)
+#endif
+
+#ifndef MOTORAPP_CURRENT_SHUNT_OHM
+#define MOTORAPP_CURRENT_SHUNT_OHM (0.01f)
+#endif
+
+#ifndef MOTORAPP_CURRENT_AMP_GAIN
+#define MOTORAPP_CURRENT_AMP_GAIN (5.18f)
+#endif
+
+#ifndef MOTORAPP_CURRENT_OFFSET_SAMPLES
+#define MOTORAPP_CURRENT_OFFSET_SAMPLES (1000U)
+#endif
+
 // static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
 
 static void MotorApp_CalibStart(MotorApp *ctx)
@@ -87,6 +107,16 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         ctx->calib_request = (cmd->has_value != 0U) ? (uint8_t)cmd->value : 1U;
         ctx->calib_request_pending = 1U;
         break;
+    case 'D':
+        if (cmd->has_value != 0U)
+        {
+            ctx->stream_page = (uint8_t)cmd->value;
+        }
+        else
+        {
+            ctx->stream_page = (uint8_t)(ctx->stream_page + 1U);
+        }
+        break;
     default:
         break;
     }
@@ -106,6 +136,24 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     ctx->adc1_raw = adc1;
     ctx->adc2_raw = adc2;
     ctx->adc_isr_count++;
+
+    if ((CurrentSenseOffset2_Ready(&ctx->i_ab_offset) == 0U) && (ctx->pwm.outputs_enabled == 0U))
+    {
+        CurrentSenseOffset2_Push(&ctx->i_ab_offset, adc1, adc2);
+    }
+
+    if (CurrentSenseOffset2_Ready(&ctx->i_ab_offset) != 0U)
+    {
+        ctx->ia_a = CurrentSense_RawToCurrentA(adc1, CurrentSenseOffset2_OffsetA(&ctx->i_ab_offset), MOTORAPP_ADC_MAX_COUNTS,
+                                               MOTORAPP_ADC_VREF_V, MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+        ctx->ib_a = CurrentSense_RawToCurrentA(adc2, CurrentSenseOffset2_OffsetB(&ctx->i_ab_offset), MOTORAPP_ADC_MAX_COUNTS,
+                                               MOTORAPP_ADC_VREF_V, MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+    }
+    else
+    {
+        ctx->ia_a = 0.0f;
+        ctx->ib_a = 0.0f;
+    }
 
     MotorCalib_Tick(&ctx->calib, 1.0f / MOTORAPP_CTRL_HZ, ctx->pos_mech_rad);
 
@@ -152,6 +200,8 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
 
     memset(ctx, 0, sizeof(*ctx));
 
+    CurrentSenseOffset2_Init(&ctx->i_ab_offset, MOTORAPP_CURRENT_OFFSET_SAMPLES);
+
     BspUartDma_Init(&ctx->uart, huart);
     HostCmdApp_Init(&ctx->host_cmd, huart);
     (void)HostCmdApp_Start(&ctx->host_cmd);
@@ -176,8 +226,8 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
 
     MotorCalibParams calib = {
         .pole_pairs = 7.0f,
-        .ud_align = 0.03f,
-        .uq_spin = 0.03f,
+        .ud_align = 0.1f,
+        .uq_spin = 0.07f,
         .omega_e_rad_s = 31.4159265f, /* 2*pi*5Hz */
         .align_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.5f),
         .spin_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.3f),
@@ -188,6 +238,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->elec_zero_offset_rad = 0.0f;
 
     ctx->last_stream_tick_ms = HAL_GetTick();
+    ctx->stream_page = 0U;
 }
 
 void MotorApp_Loop(MotorApp *ctx)
@@ -226,6 +277,24 @@ void MotorApp_Loop(MotorApp *ctx)
 
     ctx->raw21 = Mt6835_ReadRaw21(&ctx->encoder);
     ctx->pos_mech_rad = Mt6835_Raw21ToRad(ctx->raw21);
+
+    if (ctx->stream_page == 1U)
+    {
+        if (CurrentSenseOffset2_Ready(&ctx->i_ab_offset) == 0U)
+        {
+            const float n = (ctx->i_ab_offset.sample_count != 0U) ? (float)ctx->i_ab_offset.sample_count : 1.0f;
+            const float avg_a = (float)ctx->i_ab_offset.sum_a / n;
+            const float avg_b = (float)ctx->i_ab_offset.sum_b / n;
+            JustFloat_Pack4((float)ctx->adc1_raw, (float)ctx->adc2_raw, avg_a, avg_b, ctx->tx_frame);
+        }
+        else
+        {
+            JustFloat_Pack4(ctx->ia_a, ctx->ib_a, (float)CurrentSenseOffset2_OffsetA(&ctx->i_ab_offset),
+                            (float)CurrentSenseOffset2_OffsetB(&ctx->i_ab_offset), ctx->tx_frame);
+        }
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
 
     const uint8_t calib_running =
         (ctx->dbg_calib_state == (uint8_t)MOTOR_CALIB_ALIGN) || (ctx->dbg_calib_state == (uint8_t)MOTOR_CALIB_SPIN);
