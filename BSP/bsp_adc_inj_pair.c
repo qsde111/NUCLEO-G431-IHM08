@@ -60,7 +60,7 @@ HAL_StatusTypeDef BspAdcInjPair_Start(BspAdcInjPair *ctx)
     {
         return HAL_ERROR;
     }
-    if (HAL_ADCEx_InjectedStart_IT(ctx->hadc2) != HAL_OK)
+    if (HAL_ADCEx_InjectedStart(ctx->hadc2) != HAL_OK)
     {
         return HAL_ERROR;
     }
@@ -99,29 +99,21 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
         return;
     }
 
-    if (hadc == g_ctx->hadc1)
-    {
-        g_ctx->last_adc1 = (uint16_t)HAL_ADCEx_InjectedGetValue(hadc, ADC_INJECTED_RANK_1);
-        g_ctx->have1 = 1U;
-    }
-    else if (hadc == g_ctx->hadc2)
-    {
-        g_ctx->last_adc2 = (uint16_t)HAL_ADCEx_InjectedGetValue(hadc, ADC_INJECTED_RANK_1);
-        g_ctx->have2 = 1U;
-    }
-    else
+    /*
+     * ADC1/ADC2 injected conversions might run in dual mode where only the master
+     * triggers callback handling logic (common pattern: handle only ADC1).
+     * Therefore, fire the pair callback on ADC1 completion and read ADC2 value directly.
+     */
+    if (hadc != g_ctx->hadc1)
     {
         return;
     }
 
-    if ((g_ctx->have1 != 0U) && (g_ctx->have2 != 0U))
+    g_ctx->last_adc1 = (uint16_t)HAL_ADCEx_InjectedGetValue(g_ctx->hadc1, ADC_INJECTED_RANK_1);
+    g_ctx->last_adc2 = (uint16_t)HAL_ADCEx_InjectedGetValue(g_ctx->hadc2, ADC_INJECTED_RANK_1);
+
+    if (g_ctx->on_pair != 0)
     {
-        g_ctx->have1 = 0U;
-        g_ctx->have2 = 0U;
-        if (g_ctx->on_pair != 0)
-        {
-            g_ctx->on_pair(g_ctx->user, g_ctx->last_adc1, g_ctx->last_adc2);
-        }
+        g_ctx->on_pair(g_ctx->user, g_ctx->last_adc1, g_ctx->last_adc2);
     }
 }
-

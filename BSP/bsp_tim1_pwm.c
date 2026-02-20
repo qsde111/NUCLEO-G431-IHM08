@@ -34,7 +34,32 @@ HAL_StatusTypeDef BspTim1Pwm_StartTrigger(BspTim1Pwm *ctx)
 
     /* Start timer base + CH4 (NoOutput) so TRGO2 can trigger ADC injected conversions */
     (void)HAL_TIM_Base_Start(ctx->htim);
-    return HAL_TIM_PWM_Start(ctx->htim, TIM_CHANNEL_4);
+    const HAL_StatusTypeDef st = HAL_TIM_PWM_Start(ctx->htim, TIM_CHANNEL_4);
+
+    /* HAL_TIM_PWM_Start() enables MOE on TIM1; keep outputs gated until explicitly enabled */
+    (void)BspTim1Pwm_ArmIdleOutputs(ctx);
+    return st;
+}
+
+HAL_StatusTypeDef BspTim1Pwm_ArmIdleOutputs(BspTim1Pwm *ctx)
+{
+    if ((ctx == 0) || (ctx->htim == 0))
+    {
+        return HAL_ERROR;
+    }
+
+    /* Force outputs into configured idle state (CHx=RESET, CHxN=SET) */
+    __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(ctx->htim);
+
+    /* Enable CH1-3 and CH1N-3N so pins are actively driven (not Hi-Z) */
+    ctx->htim->Instance->CCER |=
+        (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC1NE | TIM_CCER_CC2NE | TIM_CCER_CC3NE);
+
+    /* Keep a known compare value; does not affect output while MOE=0 */
+    BspTim1Pwm_SetNeutral(ctx);
+
+    ctx->outputs_enabled = 0U;
+    return HAL_OK;
 }
 
 HAL_StatusTypeDef BspTim1Pwm_EnableOutputs(BspTim1Pwm *ctx)
@@ -44,34 +69,21 @@ HAL_StatusTypeDef BspTim1Pwm_EnableOutputs(BspTim1Pwm *ctx)
         return HAL_ERROR;
     }
 
+    if (ctx->outputs_enabled != 0U)
+    {
+        return HAL_OK;
+    }
+
     /* Ensure safe initial duty */
     BspTim1Pwm_SetNeutral(ctx);
 
-    if (HAL_TIM_PWM_Start(ctx->htim, TIM_CHANNEL_1) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    if (HAL_TIM_PWM_Start(ctx->htim, TIM_CHANNEL_2) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    if (HAL_TIM_PWM_Start(ctx->htim, TIM_CHANNEL_3) != HAL_OK)
+    /* Make sure outputs are armed and in idle state before enabling MOE */
+    if (BspTim1Pwm_ArmIdleOutputs(ctx) != HAL_OK)
     {
         return HAL_ERROR;
     }
 
-    if (HAL_TIMEx_PWMN_Start(ctx->htim, TIM_CHANNEL_1) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    if (HAL_TIMEx_PWMN_Start(ctx->htim, TIM_CHANNEL_2) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
-    if (HAL_TIMEx_PWMN_Start(ctx->htim, TIM_CHANNEL_3) != HAL_OK)
-    {
-        return HAL_ERROR;
-    }
+    __HAL_TIM_MOE_ENABLE(ctx->htim);
 
     ctx->outputs_enabled = 1U;
     return HAL_OK;
@@ -84,13 +96,10 @@ HAL_StatusTypeDef BspTim1Pwm_DisableOutputs(BspTim1Pwm *ctx)
         return HAL_ERROR;
     }
 
-    (void)HAL_TIMEx_PWMN_Stop(ctx->htim, TIM_CHANNEL_1);
-    (void)HAL_TIMEx_PWMN_Stop(ctx->htim, TIM_CHANNEL_2);
-    (void)HAL_TIMEx_PWMN_Stop(ctx->htim, TIM_CHANNEL_3);
-
-    (void)HAL_TIM_PWM_Stop(ctx->htim, TIM_CHANNEL_1);
-    (void)HAL_TIM_PWM_Stop(ctx->htim, TIM_CHANNEL_2);
-    (void)HAL_TIM_PWM_Stop(ctx->htim, TIM_CHANNEL_3);
+    /* Do NOT stop channels: keep CCxE/CCxNE enabled so pins stay driven to idle state.
+     * Just gate outputs via MOE (OSSI/OSSR must be enabled in TIM1 config). */
+    __HAL_TIM_MOE_DISABLE_UNCONDITIONALLY(ctx->htim);
+    BspTim1Pwm_SetNeutral(ctx);
 
     ctx->outputs_enabled = 0U;
     return HAL_OK;
@@ -120,4 +129,3 @@ void BspTim1Pwm_SetNeutral(BspTim1Pwm *ctx)
 {
     BspTim1Pwm_SetDuty(ctx, 0.5f, 0.5f, 0.5f);
 }
-

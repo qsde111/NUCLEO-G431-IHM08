@@ -28,6 +28,15 @@ typedef struct
     uint16_t adc1_raw;
     uint16_t adc2_raw;
 
+    uint32_t adc_isr_count;
+    uint8_t dbg_calib_state;
+    float dbg_theta_e;
+    float dbg_ud;
+    float dbg_uq;
+    float dbg_duty_a;
+    float dbg_duty_b;
+    float dbg_duty_c;
+
     HostCmd last_host_cmd;
     uint32_t last_host_cmd_tick_ms;
 
@@ -41,6 +50,8 @@ typedef struct
     float elec_zero_offset_rad;
     uint8_t calib_done;
     uint8_t calib_fail;
+
+    uint8_t tx_debug_toggle;
 } MotorApp;
 
 void MotorApp_Init(MotorApp *ctx,

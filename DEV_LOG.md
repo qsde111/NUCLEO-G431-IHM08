@@ -63,3 +63,33 @@
 - 结果：`MotorApp.elec_dir`、`MotorApp.elec_zero_offset_rad`，并置位 `calib_done`（失败置位 `calib_fail`）。
 - 数据流：`JustFloat_Pack4` 的第 3/4 个 float 改为输出 `elec_zero_offset_rad` 与 `elec_dir`（方便上位机观测校准结果）。
 - 代码：`Components/motor_calib.[ch]`、`Components/svpwm.[ch]`、`BSP/bsp_tim1_pwm.[ch]`、`BSP/bsp_adc_inj_pair.[ch]`、`App/motor_app.[ch]`、`Core/Src/adc.c`（修正 ADC2 也用 TRGO2 外部触发）。
+
+
+## 2026-02-20：实验结果
+
+首先发现有一个改动是在void MX_ADC2_Init(void)中增加了代码
+```c
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+```
+类似ADC1，这里其实不需要增加，配置了 multimode.Mode = ADC_DUALMODE_REGSIMULT;这个东西之后ADC1 和ADC2会同步触发的，按照我看了我上一个项目的配置，这里不主动修改成TRGO2触发，ADC2也会和ADC1一起触发的，而且CubeMX中设置了ADC2 是Slave之后也不能配置这个了，所以我从Cube MX中再次Generate code之后，这里的代码也会自动消失
+
+驱动器芯片下桥臂是低电平有效，但是上桥臂是高电平有效啊，我上电之后逻辑分析仪发现三路上桥臂默认是高电平状态，下桥臂也是高电平状态，这里应该不是被BKIN禁止了，因为我给指令C1会6路信号出现PWM控制。这里应该是上电初始化，以及停止控制的时候没有做，上电后，应该是CH1/2/3都是低电平，而CHN1/2/3都是高电平，停止控制，IDLE状态什么的同理。
+
+发现给定指令C1后，即使六路都有占空比，但是这个占空比从开始，一直都是不变化的，其中上桥臂的占空比为46%，其他路同理，没有变化。将PC8加入逻辑分析仪，发现没有信号。后我在`stm32g4xx_it.c`的`void ADC1_2_IRQHandler(void)`函数中，加入了HAL库的翻转电平函数，此后能在逻辑分析仪中观察到每个PWM低电平信号的中心处左右，PC8会翻转一轮电平
+
+### 2026-02-20：修复 & Debug 手段
+
+- 根因：`HAL_ADCEx_InjectedConvCpltCallback()` 里之前等 `ADC1` + `ADC2` 都回调到齐才调用控制逻辑；但在你这种 **ADC1 主 / ADC2 从** 的用法里，常见做法是“只在 ADC1 回调里做控制”（ADC2 不一定会单独触发回调），导致控制逻辑没跑 -> PWM 占空比一直停在初始值，PC8 也没脉冲。
+- 修复：改成 **只在 ADC1 回调触发**，并在 ADC1 回调里直接读取 ADC2 的 Injected 值；同时 ADC2 只 `HAL_ADCEx_InjectedStart()`（不启用 IT）。
+- 观测：
+  - PC8(`S_Pin`) 现在由 `MotorApp_OnAdcPair()` 用 BSRR 拉高/拉低输出脉冲（不用在 `ADC1_2_IRQHandler` 里 Toggle 了）。
+  - `JustFloat_Pack4` 在校准运行时每 1ms **交替发送**两种帧：普通帧(encoder/offset/dir) 与 Debug 帧(dutyA/dutyB/dutyC/state)。Debug 帧的第 4 个 float 为 `state`：1=ALIGN，2=SPIN，3=DONE，4=FAIL。
+
+### 2026-02-20：TIM1 6PWM 上电/停止 Idle 状态修复
+
+- 现象：上电空闲时，TIM1 CH1/2/3（上桥臂）在逻辑分析仪上默认为高电平；校准结束 `DisableOutputs()` 后也保持高电平。
+- 根因：之前 `DisableOutputs()` 用 `HAL_TIM_PWM_Stop/HAL_TIMEx_PWMN_Stop` 会把 CCxE/CCxNE 清掉，PWM 引脚变成 Hi-Z；而 IHM08M1 输入侧有上拉/默认态，导致你看到“空闲=高电平”。另外只启动 CH4(NoOutput) 做 TRGO2 时，HAL 会把 MOE 打开，但 CH1-3/CHxN 没有使能也会导致引脚不受控。
+- 修复策略：**保持 CCxE/CCxNE 使能，让引脚始终被 TIM1 驱动**；启停只通过 BDTR.MOE 门控，并利用 CubeMX 已配置的 OSSI/OSSR + IdleState（CHx idle=RESET，CHxN idle=SET）实现“空闲=上桥臂低/下桥臂高”。
+- 代码：新增 `BspTim1Pwm_ArmIdleOutputs()`；并在 `BspTim1Pwm_StartTrigger()` 里自动执行一次（上电启动 TRGO2 后立刻把 6PWM 引脚拉到 Idle）；`BspTim1Pwm_DisableOutputs()` 改为 `__HAL_TIM_MOE_DISABLE_UNCONDITIONALLY()`（不再 Stop 通道）。
+- 预期观测：上电空闲与校准结束后，CH1/2/3=低电平，CH1N/2N/3N=高电平；下发 `C1` 才出现 PWM。

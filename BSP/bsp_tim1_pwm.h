@@ -14,6 +14,7 @@ typedef struct
 void BspTim1Pwm_Init(BspTim1Pwm *ctx, TIM_HandleTypeDef *htim);
 HAL_StatusTypeDef BspTim1Pwm_StartTrigger(BspTim1Pwm *ctx);
 
+HAL_StatusTypeDef BspTim1Pwm_ArmIdleOutputs(BspTim1Pwm *ctx);
 HAL_StatusTypeDef BspTim1Pwm_EnableOutputs(BspTim1Pwm *ctx);
 HAL_StatusTypeDef BspTim1Pwm_DisableOutputs(BspTim1Pwm *ctx);
 
@@ -21,4 +22,3 @@ void BspTim1Pwm_SetDuty(BspTim1Pwm *ctx, float duty_a, float duty_b, float duty_
 void BspTim1Pwm_SetNeutral(BspTim1Pwm *ctx);
 
 #endif /* BSP_TIM1_PWM_H */
-

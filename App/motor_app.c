@@ -10,7 +10,7 @@
 #define MOTORAPP_CTRL_HZ (20000.0f)
 #endif
 
-static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
+// static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
 
 static void MotorApp_CalibStart(MotorApp *ctx)
 {
@@ -53,6 +53,9 @@ static void MotorApp_OutputVdq(MotorApp *ctx, float ud, float uq, float theta_e)
 
     SvpwmOut out = {0};
     Svpwm_Calc(u_alpha, u_beta, &out);
+    ctx->dbg_duty_a = out.duty_a;
+    ctx->dbg_duty_b = out.duty_b;
+    ctx->dbg_duty_c = out.duty_c;
     BspTim1Pwm_SetDuty(&ctx->pwm, out.duty_a, out.duty_b, out.duty_c);
 }
 
@@ -102,11 +105,18 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
     ctx->adc1_raw = adc1;
     ctx->adc2_raw = adc2;
+    ctx->adc_isr_count++;
 
     MotorCalib_Tick(&ctx->calib, 1.0f / MOTORAPP_CTRL_HZ, ctx->pos_mech_rad);
 
     MotorCalibCmd cmd = {0};
-    if (MotorCalib_GetCmd(&ctx->calib, &cmd) != 0U)
+    const uint8_t have_cmd = MotorCalib_GetCmd(&ctx->calib, &cmd);
+    ctx->dbg_ud = cmd.ud;
+    ctx->dbg_uq = cmd.uq;
+    ctx->dbg_theta_e = cmd.theta_e;
+    ctx->dbg_calib_state = (uint8_t)MotorCalib_State(&ctx->calib);
+
+    if (have_cmd != 0U)
     {
         MotorApp_OutputVdq(ctx, cmd.ud, cmd.uq, cmd.theta_e);
     }
@@ -166,8 +176,8 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
 
     MotorCalibParams calib = {
         .pole_pairs = 7.0f,
-        .ud_align = 0.08f,
-        .uq_spin = 0.06f,
+        .ud_align = 0.03f,
+        .uq_spin = 0.03f,
         .omega_e_rad_s = 31.4159265f, /* 2*pi*5Hz */
         .align_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.5f),
         .spin_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.3f),
@@ -217,6 +227,24 @@ void MotorApp_Loop(MotorApp *ctx)
     ctx->raw21 = Mt6835_ReadRaw21(&ctx->encoder);
     ctx->pos_mech_rad = Mt6835_Raw21ToRad(ctx->raw21);
 
-    JustFloat_Pack4((float)ctx->raw21, ctx->pos_mech_rad, ctx->elec_zero_offset_rad, (float)ctx->elec_dir, ctx->tx_frame);
+    const uint8_t calib_running =
+        (ctx->dbg_calib_state == (uint8_t)MOTOR_CALIB_ALIGN) || (ctx->dbg_calib_state == (uint8_t)MOTOR_CALIB_SPIN);
+    if (calib_running != 0U)
+    {
+        ctx->tx_debug_toggle ^= 1U;
+        if (ctx->tx_debug_toggle != 0U)
+        {
+            JustFloat_Pack4(ctx->dbg_duty_a, ctx->dbg_duty_b, ctx->dbg_duty_c, (float)ctx->dbg_calib_state, ctx->tx_frame);
+        }
+        else
+        {
+            JustFloat_Pack4((float)ctx->raw21, ctx->pos_mech_rad, ctx->elec_zero_offset_rad, (float)ctx->elec_dir,
+                            ctx->tx_frame);
+        }
+    }
+    else
+    {
+        JustFloat_Pack4((float)ctx->raw21, ctx->pos_mech_rad, ctx->elec_zero_offset_rad, (float)ctx->elec_dir, ctx->tx_frame);
+    }
     (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
 }
