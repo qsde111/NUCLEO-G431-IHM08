@@ -101,3 +101,21 @@
 - 换算：`I[A] = (raw - offset_raw) * (Vref/ADCmax) / (Rshunt * Gain)`；当前常量：`Rshunt=0.01Ω`，`Gain=5.18`，`Vref=3.3V`，`ADCmax=4095`。
 - 分层：新增纯组件 `Components/current_sense.h`（无 HAL 依赖）实现 offset 累计与换算；`App/motor_app.c` 在 ADC ISR 中推样本并更新 `ia_a/ib_a`。
 - 打印：新增 HostCmd `D1` 切到“电流页”JustFloat 输出：offset 未就绪时发 `rawA/rawB/avgA/avgB`；就绪后发 `Ia/Ib/offsetA/offsetB`（`D0` 回到原来的 encoder/校准页）。
+
+## 2026-02-20：ADC采样实验结果
+
+学会了D1页和D0页的使用，首先发现D1页中，通道2无值，但是通道4有值(V相电流OFFSET校准成功)
+在`adc.c`的void MX_ADC2_Init(void)中，参考ADC1加入
+```c
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+```
+上电后采样正常
+发现在CubeMX中错误的将ADC1 2配置成`Dual regular simultaneous mode only`,修改成`Dual injected simultaneous mode only`，正确的同步注入触发模式，再次`Generate Code`，生成代码后系统会自动删除上述
+```c
+  sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO2;
+  sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+```
+部分，再次上电，D1页通道2，4都没有值，采样和V相电流校准都失败，加入上述代码同样失败。
+参考了之前项目中ADC初始化的程序，似乎**双重主从模式下，建议先启动从机(ADC2)，再启动主机(ADC1)**，找到bsp_adc_inj_pair.c中的初始化`HAL_ADCEx_InjectedStart_IT(ctx->hadc1)`部分，将adc2的初始化放在adc1前边，再次烧录上电，D1页的通道2、4有值，采样成功
+此外在D1页中，下达指令C1，校准过程中通道1、2(U V相电流)形状类似马鞍波，猜测已经做了SVPWM的零序电压注入？同时两相相差90deg波形正确。

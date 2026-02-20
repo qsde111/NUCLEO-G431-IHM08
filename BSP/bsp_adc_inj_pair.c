@@ -56,11 +56,11 @@ HAL_StatusTypeDef BspAdcInjPair_Start(BspAdcInjPair *ctx)
     (void)HAL_ADCEx_Calibration_Start(ctx->hadc1, ADC_SINGLE_ENDED);
     (void)HAL_ADCEx_Calibration_Start(ctx->hadc2, ADC_SINGLE_ENDED);
 
-    if (HAL_ADCEx_InjectedStart_IT(ctx->hadc1) != HAL_OK)
+    if (HAL_ADCEx_InjectedStart(ctx->hadc2) != HAL_OK)
     {
         return HAL_ERROR;
     }
-    if (HAL_ADCEx_InjectedStart(ctx->hadc2) != HAL_OK)
+    if (HAL_ADCEx_InjectedStart_IT(ctx->hadc1) != HAL_OK)
     {
         return HAL_ERROR;
     }
