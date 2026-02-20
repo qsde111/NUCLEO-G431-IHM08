@@ -76,6 +76,8 @@ void Error_Handler(void);
 #define BKIN_Analog_GPIO_Port GPIOB
 #define CH1N_Analog_Pin GPIO_PIN_15
 #define CH1N_Analog_GPIO_Port GPIOB
+#define S_Pin GPIO_PIN_8
+#define S_GPIO_Port GPIOC
 #define BKIN_AnalogA11_Pin GPIO_PIN_11
 #define BKIN_AnalogA11_GPIO_Port GPIOA
 #define T_SWDIO_Pin GPIO_PIN_13

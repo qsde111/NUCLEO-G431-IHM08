@@ -14,4 +14,3 @@ uint8_t BspUartDma_TxReady(const BspUartDma *ctx);
 HAL_StatusTypeDef BspUartDma_Send(BspUartDma *ctx, const uint8_t *data, uint16_t len);
 
 #endif /* BSP_UART_DMA_H */
-
