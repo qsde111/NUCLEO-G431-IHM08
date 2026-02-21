@@ -56,6 +56,7 @@ HAL_StatusTypeDef BspAdcInjPair_Start(BspAdcInjPair *ctx)
     (void)HAL_ADCEx_Calibration_Start(ctx->hadc1, ADC_SINGLE_ENDED);
     (void)HAL_ADCEx_Calibration_Start(ctx->hadc2, ADC_SINGLE_ENDED);
 
+    // 双重主从模式下，建议先启动从机(ADC2)，再启动主机(ADC1)
     if (HAL_ADCEx_InjectedStart(ctx->hadc2) != HAL_OK)
     {
         return HAL_ERROR;

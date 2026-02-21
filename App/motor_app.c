@@ -41,6 +41,7 @@ static void MotorApp_CalibStart(MotorApp *ctx)
 
     ctx->calib_done = 0U;
     ctx->calib_fail = 0U;
+    ctx->vtest_active = 0U;
     (void)BspTim1Pwm_EnableOutputs(&ctx->pwm);
     MotorCalib_Start(&ctx->calib, ctx->pos_mech_rad);
 }
@@ -52,6 +53,7 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
         return;
     }
 
+    ctx->vtest_active = 0U;
     MotorCalib_Abort(&ctx->calib);
     ctx->calib_done = 0U;
     ctx->calib_fail = 0U;
@@ -117,6 +119,30 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->stream_page = (uint8_t)(ctx->stream_page + 1U);
         }
         break;
+    case 'T':
+        if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
+        {
+            ctx->vtest_active = 0U;
+            (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+        }
+        else
+        {
+            float ud = (cmd->has_value != 0U) ? cmd->value : 0.05f;
+            if (ud > 0.2f)
+            {
+                ud = 0.2f;
+            }
+            if (ud < -0.2f)
+            {
+                ud = -0.2f;
+            }
+
+            ctx->vtest_ud = ud;
+            ctx->vtest_uq = 0.0f;
+            ctx->vtest_active = 1U;
+            (void)BspTim1Pwm_EnableOutputs(&ctx->pwm);
+        }
+        break;
     default:
         break;
     }
@@ -137,22 +163,47 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     ctx->adc2_raw = adc2;
     ctx->adc_isr_count++;
 
-    if ((CurrentSenseOffset2_Ready(&ctx->i_ab_offset) == 0U) && (ctx->pwm.outputs_enabled == 0U))
+    if ((ctx->i_offset_ready == 0U) && (ctx->pwm.outputs_enabled == 0U))
     {
         CurrentSenseOffset2_Push(&ctx->i_ab_offset, adc1, adc2);
+
+        if (CurrentSenseOffset2_Ready(&ctx->i_ab_offset) != 0U)
+        {
+            if (ctx->i_offset_stage == 0U)
+            {
+                ctx->i_u_offset_raw = CurrentSenseOffset2_OffsetA(&ctx->i_ab_offset);
+                ctx->i_v_offset_raw = CurrentSenseOffset2_OffsetB(&ctx->i_ab_offset);
+
+                ctx->i_offset_stage = 1U;
+                CurrentSenseOffset2_Init(&ctx->i_ab_offset, MOTORAPP_CURRENT_OFFSET_SAMPLES);
+                /* Sample U+W to calibrate W offset too (future dynamic 2-shunt sampling support) */
+                BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, LL_ADC_CHANNEL_1, LL_ADC_CHANNEL_6);
+            }
+            else if (ctx->i_offset_stage == 1U)
+            {
+                ctx->i_w_offset_raw = CurrentSenseOffset2_OffsetB(&ctx->i_ab_offset);
+
+                ctx->i_offset_stage = 2U;
+                ctx->i_offset_ready = 1U;
+                /* Back to default U+V sampling */
+                BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, LL_ADC_CHANNEL_1, LL_ADC_CHANNEL_7);
+            }
+        }
     }
 
-    if (CurrentSenseOffset2_Ready(&ctx->i_ab_offset) != 0U)
+    if (ctx->i_offset_ready != 0U)
     {
-        ctx->ia_a = CurrentSense_RawToCurrentA(adc1, CurrentSenseOffset2_OffsetA(&ctx->i_ab_offset), MOTORAPP_ADC_MAX_COUNTS,
-                                               MOTORAPP_ADC_VREF_V, MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
-        ctx->ib_a = CurrentSense_RawToCurrentA(adc2, CurrentSenseOffset2_OffsetB(&ctx->i_ab_offset), MOTORAPP_ADC_MAX_COUNTS,
-                                               MOTORAPP_ADC_VREF_V, MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+        ctx->ia_a = CurrentSense_RawToCurrentA(adc1, ctx->i_u_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                               MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+        ctx->ib_a = CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                               MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+        ctx->ic_a = -(ctx->ia_a + ctx->ib_a);
     }
     else
     {
         ctx->ia_a = 0.0f;
         ctx->ib_a = 0.0f;
+        ctx->ic_a = 0.0f;
     }
 
     MotorCalib_Tick(&ctx->calib, 1.0f / MOTORAPP_CTRL_HZ, ctx->pos_mech_rad);
@@ -167,6 +218,10 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     if (have_cmd != 0U)
     {
         MotorApp_OutputVdq(ctx, cmd.ud, cmd.uq, cmd.theta_e);
+    }
+    else if (ctx->vtest_active != 0U)
+    {
+        MotorApp_OutputVdq(ctx, ctx->vtest_ud, ctx->vtest_uq, 0.0f);
     }
     else if (ctx->pwm.outputs_enabled != 0U)
     {
@@ -201,6 +256,11 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     memset(ctx, 0, sizeof(*ctx));
 
     CurrentSenseOffset2_Init(&ctx->i_ab_offset, MOTORAPP_CURRENT_OFFSET_SAMPLES);
+    ctx->i_offset_stage = 0U;
+    ctx->i_offset_ready = 0U;
+    ctx->i_u_offset_raw = 0U;
+    ctx->i_v_offset_raw = 0U;
+    ctx->i_w_offset_raw = 0U;
 
     BspUartDma_Init(&ctx->uart, huart);
     HostCmdApp_Init(&ctx->host_cmd, huart);
@@ -239,6 +299,9 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
 
     ctx->last_stream_tick_ms = HAL_GetTick();
     ctx->stream_page = 0U;
+    ctx->vtest_active = 0U;
+    ctx->vtest_ud = 0.0f;
+    ctx->vtest_uq = 0.0f;
 }
 
 void MotorApp_Loop(MotorApp *ctx)
@@ -280,7 +343,7 @@ void MotorApp_Loop(MotorApp *ctx)
 
     if (ctx->stream_page == 1U)
     {
-        if (CurrentSenseOffset2_Ready(&ctx->i_ab_offset) == 0U)
+        if (ctx->i_offset_ready == 0U)
         {
             const float n = (ctx->i_ab_offset.sample_count != 0U) ? (float)ctx->i_ab_offset.sample_count : 1.0f;
             const float avg_a = (float)ctx->i_ab_offset.sum_a / n;
@@ -289,8 +352,25 @@ void MotorApp_Loop(MotorApp *ctx)
         }
         else
         {
-            JustFloat_Pack4(ctx->ia_a, ctx->ib_a, (float)CurrentSenseOffset2_OffsetA(&ctx->i_ab_offset),
-                            (float)CurrentSenseOffset2_OffsetB(&ctx->i_ab_offset), ctx->tx_frame);
+            JustFloat_Pack4(ctx->ia_a, ctx->ib_a, (float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, ctx->tx_frame);
+        }
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 2U)
+    {
+        if (ctx->i_offset_ready == 0U)
+        {
+            const float n = (ctx->i_ab_offset.sample_count != 0U) ? (float)ctx->i_ab_offset.sample_count : 1.0f;
+            const float avg_a = (float)ctx->i_ab_offset.sum_a / n;
+            const float avg_b = (float)ctx->i_ab_offset.sum_b / n;
+            JustFloat_Pack4((float)ctx->i_offset_stage, (float)ctx->i_ab_offset.sample_count, avg_a, avg_b, ctx->tx_frame);
+        }
+        else
+        {
+            JustFloat_Pack4((float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, (float)ctx->i_w_offset_raw, 1.0f,
+                            ctx->tx_frame);
         }
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;

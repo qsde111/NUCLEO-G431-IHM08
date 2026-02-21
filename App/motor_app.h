@@ -29,8 +29,14 @@ typedef struct
     uint16_t adc1_raw;
     uint16_t adc2_raw;
     CurrentSenseOffset2 i_ab_offset;
+    uint16_t i_u_offset_raw;
+    uint16_t i_v_offset_raw;
+    uint16_t i_w_offset_raw;
+    uint8_t i_offset_stage;
+    uint8_t i_offset_ready;
     float ia_a;
     float ib_a;
+    float ic_a;
 
     uint32_t adc_isr_count;
     uint8_t dbg_calib_state;
@@ -57,6 +63,10 @@ typedef struct
 
     uint8_t tx_debug_toggle;
     uint8_t stream_page;
+
+    uint8_t vtest_active;
+    float vtest_ud;
+    float vtest_uq;
 } MotorApp;
 
 void MotorApp_Init(MotorApp *ctx,

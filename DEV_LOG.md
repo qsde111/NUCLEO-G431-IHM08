@@ -97,10 +97,18 @@
 ### 2026-02-20：电流采样（Ia/Ib）上电 offset + 单位换算框架
 
 - 目标：先把 **ADC 原始值 -> 去偏置 -> 物理电流(A)** 这条链路跑通，后面再接入电流环（PI + SVPWM）。
-- offset：上电后在 **PWM 输出未使能**（MOE=0，空闲态）期间累计 1000 次注入采样（20kHz -> 约 50ms）求平均，作为 `offset_raw`。
+- offset：上电后在 **PWM 输出未使能**（MOE=0，空闲态）期间做两段 offset 采样：
+  - 阶段0：采 U+V（1000 次，20kHz -> 约 50ms）
+  - 阶段1：采 U+W（1000 次，约 50ms）用于得到 W 相 offset（为后续动态两相采样算法预留）
 - 换算：`I[A] = (raw - offset_raw) * (Vref/ADCmax) / (Rshunt * Gain)`；当前常量：`Rshunt=0.01Ω`，`Gain=5.18`，`Vref=3.3V`，`ADCmax=4095`。
 - 分层：新增纯组件 `Components/current_sense.h`（无 HAL 依赖）实现 offset 累计与换算；`App/motor_app.c` 在 ADC ISR 中推样本并更新 `ia_a/ib_a`。
-- 打印：新增 HostCmd `D1` 切到“电流页”JustFloat 输出：offset 未就绪时发 `rawA/rawB/avgA/avgB`；就绪后发 `Ia/Ib/offsetA/offsetB`（`D0` 回到原来的 encoder/校准页）。
+- 打印：
+  - `D1`：电流页；offset 未就绪时发 `raw1/raw2/avg1/avg2`；就绪后发 `Ia/Ib/offsetU/offsetV`。
+  - `D2`：offset 页；未就绪时发 `stage/sample_count/avg1/avg2`；就绪后发 `offsetU/offsetV/offsetW/1.0`。
+  - `D0`：回到原来的 encoder/校准页。
+- 工具命令：新增 `T` 静态电压矢量测试（便于万用表测线电压/做电流标定）
+  - `T0.05`：使能 PWM，输出固定电压矢量（当前实现为 `Ud=0.05, Uq=0`，电角=0）
+  - `T0`：停止并关闭输出
 
 ## 2026-02-20：ADC采样实验结果
 
