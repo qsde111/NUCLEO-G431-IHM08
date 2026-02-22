@@ -30,7 +30,52 @@
 #define MOTORAPP_CURRENT_OFFSET_SAMPLES (1000U)
 #endif
 
+#ifndef MOTORAPP_VBUS_V
+#define MOTORAPP_VBUS_V (12.0f)
+#endif
+
+#ifndef MOTORAPP_I_LIMIT_A
+#define MOTORAPP_I_LIMIT_A (3.0f)
+#endif
+
+#ifndef MOTORAPP_ICTRL_KP
+#define MOTORAPP_ICTRL_KP (0.5655f)
+#endif
+
+#ifndef MOTORAPP_ICTRL_KI
+#define MOTORAPP_ICTRL_KI (703.7f)
+#endif
+
+#ifndef MOTORAPP_V_LIMIT_PU
+#define MOTORAPP_V_LIMIT_PU (0.57735026919f) /* 1/sqrt(3) */
+#endif
+
 // static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
+
+static float MotorApp_Wrap2Pi(float x)
+{
+    const float two_pi = 6.28318530718f;
+    while (x >= two_pi)
+    {
+        x -= two_pi;
+    }
+    while (x < 0.0f)
+    {
+        x += two_pi;
+    }
+    return x;
+}
+
+static float MotorApp_ElecAngleRad(const MotorApp *ctx)
+{
+    if (ctx == 0)
+    {
+        return 0.0f;
+    }
+
+    const float theta_e = ((float)ctx->elec_dir * ctx->calib.p.pole_pairs * ctx->pos_mech_rad) + ctx->elec_zero_offset_rad;
+    return MotorApp_Wrap2Pi(theta_e);
+}
 
 static void MotorApp_CalibStart(MotorApp *ctx)
 {
@@ -42,6 +87,10 @@ static void MotorApp_CalibStart(MotorApp *ctx)
     ctx->calib_done = 0U;
     ctx->calib_fail = 0U;
     ctx->vtest_active = 0U;
+    ctx->i_loop_enabled = 0U;
+    ctx->i_loop_enable_pending = 0U;
+    ctx->iq_ref_a = 0.0f;
+    FocCurrentCtrl_Reset(&ctx->i_ctrl);
     (void)BspTim1Pwm_EnableOutputs(&ctx->pwm);
     MotorCalib_Start(&ctx->calib, ctx->pos_mech_rad);
 }
@@ -54,6 +103,10 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
     }
 
     ctx->vtest_active = 0U;
+    ctx->i_loop_enabled = 0U;
+    ctx->i_loop_enable_pending = 0U;
+    ctx->iq_ref_a = 0.0f;
+    FocCurrentCtrl_Reset(&ctx->i_ctrl);
     MotorCalib_Abort(&ctx->calib);
     ctx->calib_done = 0U;
     ctx->calib_fail = 0U;
@@ -119,10 +172,48 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->stream_page = (uint8_t)(ctx->stream_page + 1U);
         }
         break;
+    case 'I':
+        if (cmd->has_value != 0U)
+        {
+            float iq = cmd->value;
+            if (iq > ctx->i_limit_a)
+            {
+                iq = ctx->i_limit_a;
+            }
+            if (iq < -ctx->i_limit_a)
+            {
+                iq = -ctx->i_limit_a;
+            }
+
+            ctx->id_ref_a = 0.0f;
+            ctx->iq_ref_a = iq;
+
+            ctx->vtest_active = 0U;
+            MotorCalib_Abort(&ctx->calib);
+
+            if (ctx->i_loop_enabled == 0U)
+            {
+                ctx->i_loop_enable_pending = 1U;
+                (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+            }
+        }
+        else
+        {
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 0U;
+            ctx->iq_ref_a = 0.0f;
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
+            (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+        }
+        break;
     case 'T':
         if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
         {
             ctx->vtest_active = 0U;
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 0U;
+            ctx->iq_ref_a = 0.0f;
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
             (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
         }
         else
@@ -140,6 +231,10 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->vtest_ud = ud;
             ctx->vtest_uq = 0.0f;
             ctx->vtest_active = 1U;
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 0U;
+            ctx->iq_ref_a = 0.0f;
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
             (void)BspTim1Pwm_EnableOutputs(&ctx->pwm);
         }
         break;
@@ -219,6 +314,23 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     {
         MotorApp_OutputVdq(ctx, cmd.ud, cmd.uq, cmd.theta_e);
     }
+    else if ((ctx->i_loop_enabled != 0U) && (ctx->i_offset_ready != 0U))
+    {
+        const float theta_e = MotorApp_ElecAngleRad(ctx);
+
+        FocCurrentCtrlOut iout = {0};
+        FocCurrentCtrl_Step(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, theta_e, ctx->id_ref_a, ctx->iq_ref_a, &iout);
+
+        ctx->dbg_theta_e = theta_e;
+        ctx->dbg_ud = iout.ud_pu;
+        ctx->dbg_uq = iout.uq_pu;
+        ctx->dbg_id_a = iout.id_a;
+        ctx->dbg_iq_a = iout.iq_a;
+        ctx->dbg_ud_pu = iout.ud_pu;
+        ctx->dbg_uq_pu = iout.uq_pu;
+
+        MotorApp_OutputVdq(ctx, iout.ud_pu, iout.uq_pu, theta_e);
+    }
     else if (ctx->vtest_active != 0U)
     {
         MotorApp_OutputVdq(ctx, ctx->vtest_ud, ctx->vtest_uq, 0.0f);
@@ -261,6 +373,14 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->i_u_offset_raw = 0U;
     ctx->i_v_offset_raw = 0U;
     ctx->i_w_offset_raw = 0U;
+
+    ctx->i_limit_a = MOTORAPP_I_LIMIT_A;
+    ctx->id_ref_a = 0.0f;
+    ctx->iq_ref_a = 0.0f;
+    ctx->i_loop_enabled = 0U;
+    ctx->i_loop_enable_pending = 0U;
+    FocCurrentCtrl_Init(&ctx->i_ctrl, MOTORAPP_ICTRL_KP, MOTORAPP_ICTRL_KI, 1.0f / MOTORAPP_CTRL_HZ, MOTORAPP_VBUS_V,
+                        MOTORAPP_V_LIMIT_PU);
 
     BspUartDma_Init(&ctx->uart, huart);
     HostCmdApp_Init(&ctx->host_cmd, huart);
@@ -331,6 +451,17 @@ void MotorApp_Loop(MotorApp *ctx)
         }
     }
 
+    if (ctx->i_loop_enable_pending != 0U)
+    {
+        if (ctx->i_offset_ready != 0U)
+        {
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 1U;
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
+            (void)BspTim1Pwm_EnableOutputs(&ctx->pwm);
+        }
+    }
+
     const uint32_t now = HAL_GetTick();
     if (now == ctx->last_stream_tick_ms)
     {
@@ -372,6 +503,13 @@ void MotorApp_Loop(MotorApp *ctx)
             JustFloat_Pack4((float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, (float)ctx->i_w_offset_raw, 1.0f,
                             ctx->tx_frame);
         }
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 3U)
+    {
+        JustFloat_Pack4(ctx->dbg_id_a, ctx->dbg_iq_a, ctx->dbg_ud_pu, ctx->dbg_uq_pu, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }

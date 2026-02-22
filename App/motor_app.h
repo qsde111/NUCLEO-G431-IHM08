@@ -1,12 +1,13 @@
 #ifndef APP_MOTOR_APP_H
 #define APP_MOTOR_APP_H
 
-#include "bsp_spi3_fast.h"
-#include "bsp_uart_dma.h"
 #include "bsp_adc_inj_pair.h"
+#include "bsp_spi3_fast.h"
 #include "bsp_tim1_pwm.h"
-#include "host_cmd_app.h"
+#include "bsp_uart_dma.h"
 #include "current_sense.h"
+#include "foc_current_ctrl.h"
+#include "host_cmd_app.h"
 #include "justfloat.h"
 #include "motor_calib.h"
 #include "mt6835.h"
@@ -46,6 +47,10 @@ typedef struct
     float dbg_duty_a;
     float dbg_duty_b;
     float dbg_duty_c;
+    float dbg_id_a;
+    float dbg_iq_a;
+    float dbg_ud_pu;
+    float dbg_uq_pu;
 
     HostCmd last_host_cmd;
     uint32_t last_host_cmd_tick_ms;
@@ -61,6 +66,13 @@ typedef struct
     uint8_t calib_done;
     uint8_t calib_fail;
 
+    FocCurrentCtrl i_ctrl;
+    float id_ref_a;
+    float iq_ref_a;
+    float i_limit_a;
+    uint8_t i_loop_enabled;
+    uint8_t i_loop_enable_pending;
+
     uint8_t tx_debug_toggle;
     uint8_t stream_page;
 
@@ -69,14 +81,8 @@ typedef struct
     float vtest_uq;
 } MotorApp;
 
-void MotorApp_Init(MotorApp *ctx,
-                   UART_HandleTypeDef *huart,
-                   SPI_HandleTypeDef *hspi,
-                   GPIO_TypeDef *cs_port,
-                   uint16_t cs_pin,
-                   TIM_HandleTypeDef *htim_pwm,
-                   ADC_HandleTypeDef *hadc1,
-                   ADC_HandleTypeDef *hadc2);
+void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin,
+                   TIM_HandleTypeDef *htim_pwm, ADC_HandleTypeDef *hadc1, ADC_HandleTypeDef *hadc2);
 void MotorApp_Loop(MotorApp *ctx);
 
 #endif /* APP_MOTOR_APP_H */
