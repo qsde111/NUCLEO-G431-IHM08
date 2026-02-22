@@ -4,6 +4,7 @@
 #include "bsp_adc_inj_pair.h"
 #include "bsp_spi3_fast.h"
 #include "bsp_tim1_pwm.h"
+#include "bsp_trig.h"
 #include "bsp_uart_dma.h"
 #include "current_sense.h"
 #include "foc_current_ctrl.h"
@@ -26,6 +27,7 @@ typedef struct
     uint32_t last_stream_tick_ms;
     uint32_t raw21;
     float pos_mech_rad;
+    uint16_t enc_div_countdown;
 
     uint16_t adc1_raw;
     uint16_t adc2_raw;

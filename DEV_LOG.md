@@ -146,3 +146,19 @@
 0,0.07,0.15V,0.15V,-1.2,0.7
 0,0.1,0.614V,0.597V,-4.48,2.42
 0,0.12,0.92V,0.893V,-6.12,3.31Z
+
+## 2026-02-21：电流环初步验证
+由于前边的采样实验中，给定U相占空比，反馈的a路电流是负值，b路是正值，将MotorApp_OnAdcPair()函数中电流反馈带上了负号
+```c
+ctx->ia_a = -CurrentSense_RawToCurrentA(adc1, ctx->i_u_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                                MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                                MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+```
+上电实验，先进行C1校准，后给定I0.5，电机正常旋转，在角度反馈`D0`页中，指令I0.5是正值，编码器方向是减小的方向6.28->0
+
+## 2026-02-22：编码器读数进 ADC ISR + CORDIC 加速 sin/cos
+
+- `JustFloat` 打印频率：`MotorApp_Loop()` 用 `HAL_GetTick()` 做了 1ms 限流，所以 **每秒 1000 帧**（校准运行时 D0 会 1ms 交替发送 debug/angle 两种帧，所以“角度帧”有效频率约 500Hz）。
+- 编码器读取：把 `Mt6835_ReadRaw21()` 移到 ADC Injected ISR（`MotorApp_OnAdcPair()`）里执行，用 `MOTORAPP_ENCODER_READ_DIV` 控制分频（默认 1 -> 20kHz）。
+- 三角函数：新增 `BSP/bsp_trig.[ch]`，用 **CORDIC** 做 `sin/cos`，并让 Park/反Park 共享同一组 `sin/cos`（每个控制 tick 只算一次）。

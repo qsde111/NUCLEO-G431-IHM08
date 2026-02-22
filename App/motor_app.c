@@ -2,7 +2,6 @@
 
 #include "main.h"
 
-#include <math.h>
 #include <string.h>
 
 /* Control tick is driven by ADC injected interrupt (TIM1 TRGO2) */
@@ -48,6 +47,11 @@
 
 #ifndef MOTORAPP_V_LIMIT_PU
 #define MOTORAPP_V_LIMIT_PU (0.57735026919f) /* 1/sqrt(3) */
+#endif
+
+#ifndef MOTORAPP_ENCODER_READ_DIV
+/* Encoder read rate inside ADC ISR: enc_hz = CTRL_HZ / DIV. DIV=1 -> 20kHz. */
+#define MOTORAPP_ENCODER_READ_DIV (1U)
 #endif
 
 // static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
@@ -113,18 +117,15 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
     (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
 }
 
-static void MotorApp_OutputVdq(MotorApp *ctx, float ud, float uq, float theta_e)
+static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_theta_e, float cos_theta_e)
 {
     if (ctx == 0)
     {
         return;
     }
 
-    const float s = sinf(theta_e);
-    const float c = cosf(theta_e);
-
-    const float u_alpha = (ud * c) - (uq * s);
-    const float u_beta = (ud * s) + (uq * c);
+    const float u_alpha = (ud * cos_theta_e) - (uq * sin_theta_e);
+    const float u_beta = (ud * sin_theta_e) + (uq * cos_theta_e);
 
     SvpwmOut out = {0};
     Svpwm_Calc(u_alpha, u_beta, &out);
@@ -258,6 +259,19 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     ctx->adc2_raw = adc2;
     ctx->adc_isr_count++;
 
+#if (MOTORAPP_ENCODER_READ_DIV > 0U)
+    if (ctx->enc_div_countdown == 0U)
+    {
+        ctx->raw21 = Mt6835_ReadRaw21(&ctx->encoder);
+        ctx->pos_mech_rad = Mt6835_Raw21ToRad(ctx->raw21);
+        ctx->enc_div_countdown = (uint16_t)(MOTORAPP_ENCODER_READ_DIV - 1U);
+    }
+    else
+    {
+        ctx->enc_div_countdown--;
+    }
+#endif
+
     if ((ctx->i_offset_ready == 0U) && (ctx->pwm.outputs_enabled == 0U))
     {
         CurrentSenseOffset2_Push(&ctx->i_ab_offset, adc1, adc2);
@@ -288,10 +302,10 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
     if (ctx->i_offset_ready != 0U)
     {
-        ctx->ia_a = CurrentSense_RawToCurrentA(adc1, ctx->i_u_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
-                                               MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
-        ctx->ib_a = CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
-                                               MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+        ctx->ia_a = -CurrentSense_RawToCurrentA(adc1, ctx->i_u_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                                MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
+        ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                                MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
         ctx->ic_a = -(ctx->ia_a + ctx->ib_a);
     }
     else
@@ -312,14 +326,20 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
     if (have_cmd != 0U)
     {
-        MotorApp_OutputVdq(ctx, cmd.ud, cmd.uq, cmd.theta_e);
+        float s = 0.0f;
+        float c = 1.0f;
+        BspTrig_SinCos(cmd.theta_e, &s, &c);
+        MotorApp_OutputVdqSc(ctx, cmd.ud, cmd.uq, s, c);
     }
     else if ((ctx->i_loop_enabled != 0U) && (ctx->i_offset_ready != 0U))
     {
         const float theta_e = MotorApp_ElecAngleRad(ctx);
+        float s = 0.0f;
+        float c = 1.0f;
+        BspTrig_SinCos(theta_e, &s, &c);
 
         FocCurrentCtrlOut iout = {0};
-        FocCurrentCtrl_Step(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, theta_e, ctx->id_ref_a, ctx->iq_ref_a, &iout);
+        FocCurrentCtrl_StepSc(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, s, c, ctx->id_ref_a, ctx->iq_ref_a, &iout);
 
         ctx->dbg_theta_e = theta_e;
         ctx->dbg_ud = iout.ud_pu;
@@ -329,11 +349,11 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         ctx->dbg_ud_pu = iout.ud_pu;
         ctx->dbg_uq_pu = iout.uq_pu;
 
-        MotorApp_OutputVdq(ctx, iout.ud_pu, iout.uq_pu, theta_e);
+        MotorApp_OutputVdqSc(ctx, iout.ud_pu, iout.uq_pu, s, c);
     }
     else if (ctx->vtest_active != 0U)
     {
-        MotorApp_OutputVdq(ctx, ctx->vtest_ud, ctx->vtest_uq, 0.0f);
+        MotorApp_OutputVdqSc(ctx, ctx->vtest_ud, ctx->vtest_uq, 0.0f, 1.0f);
     }
     else if (ctx->pwm.outputs_enabled != 0U)
     {
@@ -367,12 +387,16 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
 
     memset(ctx, 0, sizeof(*ctx));
 
+    BspTrig_Init();
+
     CurrentSenseOffset2_Init(&ctx->i_ab_offset, MOTORAPP_CURRENT_OFFSET_SAMPLES);
     ctx->i_offset_stage = 0U;
     ctx->i_offset_ready = 0U;
     ctx->i_u_offset_raw = 0U;
     ctx->i_v_offset_raw = 0U;
     ctx->i_w_offset_raw = 0U;
+
+    ctx->enc_div_countdown = 0U;
 
     ctx->i_limit_a = MOTORAPP_I_LIMIT_A;
     ctx->id_ref_a = 0.0f;
@@ -468,9 +492,6 @@ void MotorApp_Loop(MotorApp *ctx)
         return;
     }
     ctx->last_stream_tick_ms = now;
-
-    ctx->raw21 = Mt6835_ReadRaw21(&ctx->encoder);
-    ctx->pos_mech_rad = Mt6835_Raw21ToRad(ctx->raw21);
 
     if (ctx->stream_page == 1U)
     {

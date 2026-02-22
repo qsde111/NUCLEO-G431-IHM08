@@ -65,8 +65,8 @@ static inline float FocCurrentCtrl_Clamp(float x, float lo, float hi)
     return x;
 }
 
-static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float theta_e_rad,
-                                       float id_ref_a, float iq_ref_a, FocCurrentCtrlOut *out)
+static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float sin_theta_e,
+                                         float cos_theta_e, float id_ref_a, float iq_ref_a, FocCurrentCtrlOut *out)
 {
     (void)ic_a; /* only needed for validity checks; Clarke assumes ia+ib+ic=0 */
 
@@ -79,10 +79,8 @@ static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib
     const float i_alpha = ia_a;
     const float i_beta = (ia_a + 2.0f * ib_a) * inv_sqrt3;
 
-    const float s = sinf(theta_e_rad);
-    const float c = cosf(theta_e_rad);
-    const float id_a = (i_alpha * c) + (i_beta * s);
-    const float iq_a = (-i_alpha * s) + (i_beta * c);
+    const float id_a = (i_alpha * cos_theta_e) + (i_beta * sin_theta_e);
+    const float iq_a = (-i_alpha * sin_theta_e) + (i_beta * cos_theta_e);
 
     const float ed = id_ref_a - id_a;
     const float eq = iq_ref_a - iq_a;
@@ -109,6 +107,14 @@ static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib
     out->uq_v = uq_v;
     out->ud_pu = ud_v / ctx->vbus_v;
     out->uq_pu = uq_v / ctx->vbus_v;
+}
+
+static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float theta_e_rad, float id_ref_a,
+                                       float iq_ref_a, FocCurrentCtrlOut *out)
+{
+    const float s = sinf(theta_e_rad);
+    const float c = cosf(theta_e_rad);
+    FocCurrentCtrl_StepSc(ctx, ia_a, ib_a, ic_a, s, c, id_ref_a, iq_ref_a, out);
 }
 
 #endif /* COMPONENTS_FOC_CURRENT_CTRL_H */
