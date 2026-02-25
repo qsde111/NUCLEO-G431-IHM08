@@ -1,6 +1,8 @@
 #include "host_cmd_app.h"
 
-#include "main.h"
+#include <string.h>
+
+/* Host 命令接收链路：UART RX DMA circular -> Poll 取增量字节 -> Feed 解析器 -> Pop 给上层。 */
 
 static void HostCmdApp_OnBytes(void *user, const uint8_t *data, uint16_t len)
 {
@@ -15,8 +17,7 @@ void HostCmdApp_Init(HostCmdApp *ctx, UART_HandleTypeDef *huart)
         return;
     }
 
-    HostCmdParser_Init(&ctx->parser);
-    ctx->last_rx_tick_ms = HAL_GetTick();
+    (void)memset(&ctx->parser, 0, sizeof(ctx->parser));
     BspUartRxDma_Init(&ctx->rx, huart, ctx->rx_dma_buf, (uint16_t)sizeof(ctx->rx_dma_buf));
 }
 
@@ -27,7 +28,6 @@ HAL_StatusTypeDef HostCmdApp_Start(HostCmdApp *ctx)
         return HAL_ERROR;
     }
 
-    ctx->last_rx_tick_ms = HAL_GetTick();
     return BspUartRxDma_Start(&ctx->rx);
 }
 
@@ -38,19 +38,7 @@ void HostCmdApp_Loop(HostCmdApp *ctx)
         return;
     }
 
-    const uint16_t got = BspUartRxDma_Poll(&ctx->rx, &ctx->parser, HostCmdApp_OnBytes);
-    if (got != 0U)
-    {
-        ctx->last_rx_tick_ms = HAL_GetTick();
-    }
-    else if (HostCmdParser_HasPartialLine(&ctx->parser) != 0U)
-    {
-        const uint32_t now = HAL_GetTick();
-        if ((now - ctx->last_rx_tick_ms) > (uint32_t)HOST_CMD_APP_IDLE_FLUSH_MS)
-        {
-            HostCmdParser_FlushLine(&ctx->parser);
-        }
-    }
+    (void)BspUartRxDma_Poll(&ctx->rx, &ctx->parser, HostCmdApp_OnBytes);
 }
 
 uint8_t HostCmdApp_Pop(HostCmdApp *ctx, HostCmd *out)
@@ -61,4 +49,3 @@ uint8_t HostCmdApp_Pop(HostCmdApp *ctx, HostCmd *out)
     }
     return HostCmdParser_Pop(&ctx->parser, out);
 }
-

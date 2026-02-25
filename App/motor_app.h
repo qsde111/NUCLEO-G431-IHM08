@@ -1,6 +1,25 @@
 #ifndef APP_MOTOR_APP_H
 #define APP_MOTOR_APP_H
 
+/**
+ * @file motor_app.h
+ * @brief 电机实验应用（FOC 框架 + HostCmd + PWM/ADC/Encoder 组合）。
+ *
+ * HostCmd 命令表（严格分隔符：命令必须以 `\r` / `\n` / `;` 结束）：
+ *
+ * - `P<deg>`：占位（保存目标位置，当前不参与控制）。例如 `P90`。
+ * - `V<rad_s>`：占位（保存目标速度，当前不参与控制）。例如 `V10`。
+ * - `C1` / `C`：启动一次校准（ALIGN -> SPIN -> DONE/FAIL），校准完成会自动关闭 PWM 输出。
+ * - `C0`：忽略（本项目使用硬件急停，不提供软件中止校准）。
+ * - `I<iq_A>`：设置电流环 `Iq_ref`（单位 A，带限幅），并在 offset 就绪后自动使能输出。
+ * - `I`：关闭电流环并关闭 PWM 输出。
+ * - `T<ud_pu>`：开环电压测试（Ud，单位为 per-unit，默认 0.05，带限幅）。
+ * - `T0`：停止电压测试并关闭 PWM 输出。
+ * - `D` / `D<n>`：切换/设置数据流页面（JustFloat_Pack4）。
+ *
+ * 约束：校准运行中（ALIGN/SPIN）仅允许 `D` 切页，其它命令都会被忽略。
+ */
+
 #include "bsp_adc_inj_pair.h"
 #include "bsp_spi3_fast.h"
 #include "bsp_tim1_pwm.h"
@@ -83,8 +102,24 @@ typedef struct
     float vtest_uq;
 } MotorApp;
 
+/**
+ * @brief 初始化 MotorApp（启动 ADC Injected + PWM trigger + UART RX DMA 等）。
+ * @param ctx 应用上下文。
+ * @param huart Host 串口。
+ * @param hspi 编码器 SPI。
+ * @param cs_port 编码器 CS 端口。
+ * @param cs_pin 编码器 CS 引脚。
+ * @param htim_pwm TIM1（PWM + TRGO2 触发 ADC injected）。
+ * @param hadc1 ADC1。
+ * @param hadc2 ADC2。
+ */
 void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *hspi, GPIO_TypeDef *cs_port, uint16_t cs_pin,
                    TIM_HandleTypeDef *htim_pwm, ADC_HandleTypeDef *hadc1, ADC_HandleTypeDef *hadc2);
+
+/**
+ * @brief 主循环任务：处理 HostCmd + 数据流输出等（控制 tick 由 ADC injected ISR 驱动）。
+ * @param ctx 应用上下文。
+ */
 void MotorApp_Loop(MotorApp *ctx);
 
 #endif /* APP_MOTOR_APP_H */

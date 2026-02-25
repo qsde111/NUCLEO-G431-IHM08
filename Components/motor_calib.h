@@ -66,4 +66,3 @@ int8_t MotorCalib_Dir(const MotorCalib *ctx);
 float MotorCalib_ZeroOffsetRad(const MotorCalib *ctx);
 
 #endif /* COMPONENTS_MOTOR_CALIB_H */
-

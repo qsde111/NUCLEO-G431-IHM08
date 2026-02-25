@@ -11,8 +11,7 @@
 - LPUART1 **RX DMA circular** 环形缓冲接收（轮询 NDTR 取新字节，不依赖中断回调）。
 - ASCII 指令解析（解耦分层）：
   - 支持 `P100` / `V20` / `C1` 这类“1 个字母 + 可选数字参数”的命令。
-  - 以 `\\r` / `\\n` / `;` 作为命令结束符。
-  - 额外支持“无结束符”的情况：如果收到一串字节后 **超过 10ms 没有新字节**，会自动 flush 当作一条命令（可通过宏调整）。
+  - 以 `\\r` / `\\n` / `;` 作为命令结束符（严格分隔符模式，不再支持 idle flush）。
 - 在 `MotorApp` 中接入解析结果，先做 **占位接口**（仅保存 setpoint/标志位，不做电机动作）。
 
 ## 分层与文件
@@ -23,13 +22,12 @@
 
 - `Components/host_cmd_parser.[ch]`
   - 只负责：把字节流解析为命令 `HostCmd { op, has_value, value }`，并放入一个小队列（默认 8 深度）。
-  - 解析规则：首字符为命令字母（自动转大写）；后面若是数字（支持 `-12`/`3.14`），则记为 `value`。
+  - 解析规则：首字符为命令字母（要求大写且无空格）；后面若是数字（支持 `-12`/`3.14`），则记为 `value`。
 
 - `App/host_cmd_app.[ch]`
-  - 负责把 BSP 的 “DMA 新数据” 喂给 Components parser，并做一个“10ms idle flush”的策略。
+  - 负责把 BSP 的 “DMA 新数据” 喂给 Components parser（严格分隔符，不做 idle flush）。
   - 宏：
     - `HOST_CMD_APP_RX_DMA_BUF_LEN` 默认 256
-    - `HOST_CMD_APP_IDLE_FLUSH_MS` 默认 10
 
 - `App/motor_app.[ch]`
   - `MotorApp_Init()` 里启动 RX DMA。
@@ -43,7 +41,7 @@
 ## 当前行为说明（方便你调试）
 
 - 上位机发送建议带结束符：`P100\\r\\n`、`V20\\n`、`C1;`
-- 如果你发送 `P100` 不带结束符：停止发送后等待约 `HOST_CMD_APP_IDLE_FLUSH_MS`（默认 10ms），也会被当成一条命令解析。
+- 命令必须带结束符，否则不会被解析（本项目不再支持 idle flush）。
 - 解析到命令后 **不会回发 ACK**（避免和当前 `JustFloat_Pack4` 的二进制流混在一起导致上位机解析混乱）。
 
 ## 已知限制 / 后续可改进点
@@ -56,7 +54,7 @@
 
 ## 2026-02-19：`C1` dir/zero_offset 校准（开环 SVPWM 脚手架）
 
-- 触发：上位机发送 `C1` 开始；`C0` 中止。
+- 触发：上位机发送 `C1`/`C` 开始；`C0` 忽略（使用硬件急停）。
 - Tick：控制循环跑在 ADC Injected ISR（20kHz）；PC8(`S_Pin`) 输出脉冲用于测量 ISR 占用。
 - PWM/ADC：TIM1 CH4(NoOutput) 产生 TRGO2 触发 ADC1+ADC2 Injected 同步采样；仅在校准期间使能 TIM1 CH1-3 + CH1N-3N 输出。
 - 流程：ALIGN(0.5s, `Ud=0.08`) -> SPIN(0.3s, `Uq=0.06`, 5Hz 电角) -> 计算 `elec_dir` 与 `elec_zero_offset_rad`。

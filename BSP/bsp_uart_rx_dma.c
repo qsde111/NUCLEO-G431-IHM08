@@ -50,6 +50,13 @@ HAL_StatusTypeDef BspUartRxDma_Start(BspUartRxDma *ctx)
     return HAL_OK;
 }
 
+/**
+ * @brief 轮询串口DMA接收状态，并回调处理新数据 (位于BSP层)
+ * @param ctx       指向BSP层UART DMA句柄的指针
+ * @param user      透传给回调函数的用户上下文指针 (实际传入算法层结构体)
+ * @param on_bytes  当有新数据到来时触发的回调函数
+ * @return uint16_t 本次处理的字节数
+ */
 uint16_t BspUartRxDma_Poll(BspUartRxDma *ctx, void *user, BspUartRxDma_OnBytes on_bytes)
 {
     if ((ctx == 0) || (ctx->huart == 0) || (ctx->huart->hdmarx == 0) || (ctx->rx_buf == 0) || (ctx->rx_buf_len == 0U))

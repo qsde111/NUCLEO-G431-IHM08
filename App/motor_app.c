@@ -99,24 +99,6 @@ static void MotorApp_CalibStart(MotorApp *ctx)
     MotorCalib_Start(&ctx->calib, ctx->pos_mech_rad);
 }
 
-static void MotorApp_CalibAbort(MotorApp *ctx)
-{
-    if (ctx == 0)
-    {
-        return;
-    }
-
-    ctx->vtest_active = 0U;
-    ctx->i_loop_enabled = 0U;
-    ctx->i_loop_enable_pending = 0U;
-    ctx->iq_ref_a = 0.0f;
-    FocCurrentCtrl_Reset(&ctx->i_ctrl);
-    MotorCalib_Abort(&ctx->calib);
-    ctx->calib_done = 0U;
-    ctx->calib_fail = 0U;
-    (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
-}
-
 static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_theta_e, float cos_theta_e)
 {
     if (ctx == 0)
@@ -135,6 +117,7 @@ static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_th
     BspTim1Pwm_SetDuty(&ctx->pwm, out.duty_a, out.duty_b, out.duty_c);
 }
 
+/* Host 命令只更新参考值/标志位；真正的控制输出在 ADC injected ISR（MotorApp_OnAdcPair）里完成。 */
 static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 {
     if ((ctx == 0) || (cmd == 0))
@@ -144,6 +127,14 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 
     ctx->last_host_cmd = *cmd;
     ctx->last_host_cmd_tick_ms = HAL_GetTick();
+
+    const MotorCalibState calib_st = MotorCalib_State(&ctx->calib);
+    const uint8_t calib_running = (calib_st == MOTOR_CALIB_ALIGN) || (calib_st == MOTOR_CALIB_SPIN);
+    if ((calib_running != 0U) && (cmd->op != 'D'))
+    {
+        /* 校准期间不接受除切页之外的其它命令（无 C0 软件中止，使用硬件急停）。 */
+        return;
+    }
 
     switch (cmd->op)
     {
@@ -160,7 +151,12 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
     case 'C':
-        ctx->calib_request = (cmd->has_value != 0U) ? (uint8_t)cmd->value : 1U;
+        if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
+        {
+            /* C0：忽略（本项目使用硬件急停，不需要软件中止校准）。 */
+            break;
+        }
+        ctx->calib_request = 1U;
         ctx->calib_request_pending = 1U;
         break;
     case 'D':
@@ -244,6 +240,10 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
     }
 }
 
+/* 控制 tick（约 20kHz）入口：由 ADC injected 转换完成回调触发。
+ * - 采样电流（带 U/V/W offset 两阶段校准）
+ * - 推进校准状态机（C1）/ 电流环（I）/ 电压测试（T）
+ * - 计算并输出 SVPWM 占空比 */
 static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 {
     MotorApp *ctx = (MotorApp *)user;
@@ -465,11 +465,7 @@ void MotorApp_Loop(MotorApp *ctx)
     if (ctx->calib_request_pending != 0U)
     {
         ctx->calib_request_pending = 0U;
-        if (ctx->calib_request == 0U)
-        {
-            MotorApp_CalibAbort(ctx);
-        }
-        else
+        if (ctx->calib_request != 0U)
         {
             MotorApp_CalibStart(ctx);
         }

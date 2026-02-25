@@ -180,4 +180,3 @@ float MotorCalib_ZeroOffsetRad(const MotorCalib *ctx)
     }
     return ctx->zero_offset_rad;
 }
-
