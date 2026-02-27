@@ -57,12 +57,12 @@ void MotorCalib_Start(MotorCalib *ctx, float theta_mech_rad)
         return;
     }
 
-    ctx->state = MOTOR_CALIB_ALIGN;
-    ctx->tick = 0U;
+    ctx->state = MOTOR_CALIB_ALIGN; // 将状态机切换为对齐模式（给 D 轴注入恒定电压，迫使电机锁定在电角度 0 度）
+    ctx->tick = 0U;                 // 计时器清零，用于控制对齐模式和后续旋转模式的持续时间
     ctx->theta_e_cmd = 0.0f;
-    ctx->theta_mech_align = theta_mech_rad;
-    ctx->theta_mech_start = theta_mech_rad;
-    ctx->theta_mech_end = theta_mech_rad;
+    ctx->theta_mech_align = theta_mech_rad; // 对齐时-机械角度
+    ctx->theta_mech_start = theta_mech_rad; // 旋转开始时-机械角度
+    ctx->theta_mech_end = theta_mech_rad;   // 旋转结束时-机械角度
     ctx->dir = 1;
     ctx->zero_offset_rad = 0.0f;
 }
@@ -78,6 +78,7 @@ void MotorCalib_Abort(MotorCalib *ctx)
     ctx->theta_e_cmd = 0.0f;
 }
 
+/* 磁极校准时的状态机流转和给定Uq Ud 电角度计算 */
 void MotorCalib_Tick(MotorCalib *ctx, float dt_s, float theta_mech_rad)
 {
     if (ctx == 0)
@@ -109,6 +110,8 @@ void MotorCalib_Tick(MotorCalib *ctx, float dt_s, float theta_mech_rad)
         if (ctx->tick >= ctx->p.spin_ticks)
         {
             ctx->theta_mech_end = theta_mech_rad;
+
+            /* 转子实际走过的距离，考虑了0到360度过零点的环绕处理 */
             const float d_mech = MotorCalib_WrapPi(ctx->theta_mech_end - ctx->theta_mech_start);
 
             if ((d_mech > ctx->p.min_move_rad) || (d_mech < -ctx->p.min_move_rad))
@@ -126,6 +129,7 @@ void MotorCalib_Tick(MotorCalib *ctx, float dt_s, float theta_mech_rad)
     }
 }
 
+/* 将磁极校准阶段的Uq Ud 电角度给定值从MotorCalib *ctx搬运到外部缓冲区MotorCalibCmd *out */
 uint8_t MotorCalib_GetCmd(const MotorCalib *ctx, MotorCalibCmd *out)
 {
     if ((ctx == 0) || (out == 0))

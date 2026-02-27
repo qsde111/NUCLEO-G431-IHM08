@@ -17,6 +17,7 @@ static uint16_t BspUartRxDma_DmaPos(const BspUartRxDma *ctx)
     return pos;
 }
 
+// 第三位，就是要放置接收指令的缓冲区的首位地址，让BspUartRxDma *ctx结构体中的uint8_t *rx_buf;的ctx->rx_buf = rx_buf;
 void BspUartRxDma_Init(BspUartRxDma *ctx, UART_HandleTypeDef *huart, uint8_t *rx_buf, uint16_t rx_buf_len)
 {
     if (ctx == 0)
@@ -51,7 +52,8 @@ HAL_StatusTypeDef BspUartRxDma_Start(BspUartRxDma *ctx)
 }
 
 /**
- * @brief 轮询串口DMA接收状态，并回调处理新数据 (位于BSP层)
+ * @brief
+ * 轮询串口DMA接收状态pos位置是否改变，根据pos<->last_pos的相对关系选择处理数据的方式，后通过app层函数调用算法层函数解析指令
  * @param ctx       指向BSP层UART DMA句柄的指针
  * @param user      透传给回调函数的用户上下文指针 (实际传入算法层结构体)
  * @param on_bytes  当有新数据到来时触发的回调函数

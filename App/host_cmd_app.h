@@ -10,7 +10,10 @@
  * 2) 回调把新增字节喂给 `HostCmdParser_Feed()`；
  * 3) 主循环使用 `HostCmdApp_Pop()` 取出已解析的命令。
  *
- * 约束：命令必须以 `\r` / `\n` / `;` 结束（严格分隔符模式）。
+ * 结束符：命令通常以 `\r` / `\n` / `;` 结束。
+ *
+ * 可选增强：若上位机不发送结束符，上层可用“idle flush”策略：
+ * - 连续一段时间（默认 10ms）没有新字节，则把当前缓冲区 flush 当作一条命令。
  */
 
 #include "bsp_uart_rx_dma.h"
@@ -22,10 +25,15 @@
 #define HOST_CMD_APP_RX_DMA_BUF_LEN (256U)
 #endif
 
+#ifndef HOST_CMD_APP_IDLE_FLUSH_MS
+#define HOST_CMD_APP_IDLE_FLUSH_MS (10U)
+#endif
+
 typedef struct
 {
     BspUartRxDma rx;
     HostCmdParser parser;
+    uint32_t last_rx_tick_ms;
     uint8_t rx_dma_buf[HOST_CMD_APP_RX_DMA_BUF_LEN];
 } HostCmdApp;
 
@@ -49,12 +57,6 @@ HAL_StatusTypeDef HostCmdApp_Start(HostCmdApp *ctx);
  */
 void HostCmdApp_Loop(HostCmdApp *ctx);
 
-/**
- * @brief 弹出一条已解析的 HostCmd。
- * @param ctx HostCmdApp 上下文。
- * @param out 输出命令。
- * @return 1=成功弹出；0=队列为空或参数无效。
- */
 uint8_t HostCmdApp_Pop(HostCmdApp *ctx, HostCmd *out);
 
 #endif /* APP_HOST_CMD_APP_H */

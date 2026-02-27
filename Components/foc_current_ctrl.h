@@ -42,6 +42,7 @@ static inline void FocCurrentCtrl_Init(FocCurrentCtrl *ctx, float kp, float ki, 
     ctx->iq_int_v = 0.0f;
 }
 
+/* 重置电流环积分器 */
 static inline void FocCurrentCtrl_Reset(FocCurrentCtrl *ctx)
 {
     if (ctx == 0)
@@ -65,6 +66,7 @@ static inline float FocCurrentCtrl_Clamp(float x, float lo, float hi)
     return x;
 }
 
+/* Clarke/Park 变换将采样电流投影至 dq 轴，用电流环PI调节器计算d/q 轴目标电压，输入FocCurrentCtrlOut *out缓冲区中 */
 static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float sin_theta_e,
                                          float cos_theta_e, float id_ref_a, float iq_ref_a, FocCurrentCtrlOut *out)
 {
@@ -75,7 +77,7 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
         return;
     }
 
-    const float inv_sqrt3 = 0.57735026919f;
+    const float inv_sqrt3 = 0.57735026919f; // 根号3的倒数
     const float i_alpha = ia_a;
     const float i_beta = (ia_a + 2.0f * ib_a) * inv_sqrt3;
 
@@ -92,7 +94,7 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     float id_int = ctx->id_int_v + (ctx->ki * ed * ctx->dt_s);
     float ud_v = pd + id_int;
     ud_v = FocCurrentCtrl_Clamp(ud_v, -v_limit_v, v_limit_v);
-    ctx->id_int_v = ud_v - pd;
+    ctx->id_int_v = ud_v - pd; // 抗饱和回调，将积分器限制在一个“刚好不会导致深度饱和”的临界点
 
     /* q-axis PI with integrator clamping (anti-windup) */
     const float pq = ctx->kp * eq;
@@ -100,6 +102,8 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     float uq_v = pq + iq_int;
     uq_v = FocCurrentCtrl_Clamp(uq_v, -v_limit_v, v_limit_v);
     ctx->iq_int_v = uq_v - pq;
+
+    /*缺少电压矢量限幅*/
 
     out->id_a = id_a;
     out->iq_a = iq_a;
@@ -109,8 +113,8 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     out->uq_pu = uq_v / ctx->vbus_v;
 }
 
-static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float theta_e_rad, float id_ref_a,
-                                       float iq_ref_a, FocCurrentCtrlOut *out)
+static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float theta_e_rad,
+                                       float id_ref_a, float iq_ref_a, FocCurrentCtrlOut *out)
 {
     const float s = sinf(theta_e_rad);
     const float c = cosf(theta_e_rad);

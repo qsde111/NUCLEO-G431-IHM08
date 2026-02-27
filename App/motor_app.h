@@ -5,19 +5,17 @@
  * @file motor_app.h
  * @brief 电机实验应用（FOC 框架 + HostCmd + PWM/ADC/Encoder 组合）。
  *
- * HostCmd 命令表（严格分隔符：命令必须以 `\r` / `\n` / `;` 结束）：
+ * HostCmd 命令表（建议以 `\r` / `\n` / `;` 结束；也支持 idle flush）：
  *
  * - `P<deg>`：占位（保存目标位置，当前不参与控制）。例如 `P90`。
  * - `V<rad_s>`：占位（保存目标速度，当前不参与控制）。例如 `V10`。
  * - `C1` / `C`：启动一次校准（ALIGN -> SPIN -> DONE/FAIL），校准完成会自动关闭 PWM 输出。
- * - `C0`：忽略（本项目使用硬件急停，不提供软件中止校准）。
+ * - `C0`：中止校准并关闭 PWM 输出（软件停机手段；硬件急停更可靠）。
  * - `I<iq_A>`：设置电流环 `Iq_ref`（单位 A，带限幅），并在 offset 就绪后自动使能输出。
  * - `I`：关闭电流环并关闭 PWM 输出。
  * - `T<ud_pu>`：开环电压测试（Ud，单位为 per-unit，默认 0.05，带限幅）。
  * - `T0`：停止电压测试并关闭 PWM 输出。
  * - `D` / `D<n>`：切换/设置数据流页面（JustFloat_Pack4）。
- *
- * 约束：校准运行中（ALIGN/SPIN）仅允许 `D` 切页，其它命令都会被忽略。
  */
 
 #include "bsp_adc_inj_pair.h"
@@ -88,8 +86,8 @@ typedef struct
     uint8_t calib_fail;
 
     FocCurrentCtrl i_ctrl;
-    float id_ref_a;
-    float iq_ref_a;
+    float id_ref_a; // 直轴给定电流
+    float iq_ref_a; // 交轴给定电流
     float i_limit_a;
     uint8_t i_loop_enabled;
     uint8_t i_loop_enable_pending;

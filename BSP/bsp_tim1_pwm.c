@@ -74,7 +74,6 @@ HAL_StatusTypeDef BspTim1Pwm_EnableOutputs(BspTim1Pwm *ctx)
         return HAL_OK;
     }
 
-    /* Ensure safe initial duty */
     BspTim1Pwm_SetNeutral(ctx);
 
     /* Make sure outputs are armed and in idle state before enabling MOE */
@@ -89,6 +88,7 @@ HAL_StatusTypeDef BspTim1Pwm_EnableOutputs(BspTim1Pwm *ctx)
     return HAL_OK;
 }
 
+/* 关闭MOE使六路PWM进入IDLE状态，置位CCR于50%中性点位置准备下一次启动 */
 HAL_StatusTypeDef BspTim1Pwm_DisableOutputs(BspTim1Pwm *ctx)
 {
     if ((ctx == 0) || (ctx->htim == 0))
@@ -105,6 +105,7 @@ HAL_StatusTypeDef BspTim1Pwm_DisableOutputs(BspTim1Pwm *ctx)
     return HAL_OK;
 }
 
+/* 通过三相占空比修改三相CCR值并输出 */
 void BspTim1Pwm_SetDuty(BspTim1Pwm *ctx, float duty_a, float duty_b, float duty_c)
 {
     if ((ctx == 0) || (ctx->htim == 0) || (ctx->period == 0U))
@@ -125,6 +126,7 @@ void BspTim1Pwm_SetDuty(BspTim1Pwm *ctx, float duty_a, float duty_b, float duty_
     __HAL_TIM_SET_COMPARE(ctx->htim, TIM_CHANNEL_3, ccr3);
 }
 
+/* 50% 占空比的物理意义：零矢量，任意两相线压差为0；自举电容充电 */
 void BspTim1Pwm_SetNeutral(BspTim1Pwm *ctx)
 {
     BspTim1Pwm_SetDuty(ctx, 0.5f, 0.5f, 0.5f);

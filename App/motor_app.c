@@ -51,7 +51,7 @@
 
 #ifndef MOTORAPP_ENCODER_READ_DIV
 /* Encoder read rate inside ADC ISR: enc_hz = CTRL_HZ / DIV. DIV=1 -> 20kHz. */
-#define MOTORAPP_ENCODER_READ_DIV (1U)
+#define MOTORAPP_ENCODER_READ_DIV (1U) /* ADC 中断内的编码器读取频率 */
 #endif
 
 // static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
@@ -70,6 +70,7 @@ static float MotorApp_Wrap2Pi(float x)
     return x;
 }
 
+/* 当前读取的机械角度转换成当前转子的真实电角度*/
 static float MotorApp_ElecAngleRad(const MotorApp *ctx)
 {
     if (ctx == 0)
@@ -99,6 +100,25 @@ static void MotorApp_CalibStart(MotorApp *ctx)
     MotorCalib_Start(&ctx->calib, ctx->pos_mech_rad);
 }
 
+static void MotorApp_CalibAbort(MotorApp *ctx)
+{
+    if (ctx == 0)
+    {
+        return;
+    }
+
+    ctx->vtest_active = 0U;
+    ctx->i_loop_enabled = 0U;
+    ctx->i_loop_enable_pending = 0U;
+    ctx->iq_ref_a = 0.0f;
+    FocCurrentCtrl_Reset(&ctx->i_ctrl);
+    MotorCalib_Abort(&ctx->calib);
+    ctx->calib_done = 0U;
+    ctx->calib_fail = 0U;
+    (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+}
+
+/* 通过给定ud uq计算三路pwm占空比并改变对应CCR值 */
 static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_theta_e, float cos_theta_e)
 {
     if (ctx == 0)
@@ -106,6 +126,7 @@ static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_th
         return;
     }
 
+    /* 反Park变换 */
     const float u_alpha = (ud * cos_theta_e) - (uq * sin_theta_e);
     const float u_beta = (ud * sin_theta_e) + (uq * cos_theta_e);
 
@@ -117,7 +138,6 @@ static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_th
     BspTim1Pwm_SetDuty(&ctx->pwm, out.duty_a, out.duty_b, out.duty_c);
 }
 
-/* Host 命令只更新参考值/标志位；真正的控制输出在 ADC injected ISR（MotorApp_OnAdcPair）里完成。 */
 static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 {
     if ((ctx == 0) || (cmd == 0))
@@ -127,14 +147,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 
     ctx->last_host_cmd = *cmd;
     ctx->last_host_cmd_tick_ms = HAL_GetTick();
-
-    const MotorCalibState calib_st = MotorCalib_State(&ctx->calib);
-    const uint8_t calib_running = (calib_st == MOTOR_CALIB_ALIGN) || (calib_st == MOTOR_CALIB_SPIN);
-    if ((calib_running != 0U) && (cmd->op != 'D'))
-    {
-        /* 校准期间不接受除切页之外的其它命令（无 C0 软件中止，使用硬件急停）。 */
-        return;
-    }
 
     switch (cmd->op)
     {
@@ -151,12 +163,7 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
     case 'C':
-        if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
-        {
-            /* C0：忽略（本项目使用硬件急停，不需要软件中止校准）。 */
-            break;
-        }
-        ctx->calib_request = 1U;
+        ctx->calib_request = (cmd->has_value != 0U) ? (uint8_t)cmd->value : 1U;
         ctx->calib_request_pending = 1U;
         break;
     case 'D':
@@ -203,6 +210,8 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
         }
         break;
+
+        /* 将转子强拖到U相 */
     case 'T':
         if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
         {
@@ -259,6 +268,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     ctx->adc2_raw = adc2;
     ctx->adc_isr_count++;
 
+/* ISR中断内编码器读取分频 */
 #if (MOTORAPP_ENCODER_READ_DIV > 0U)
     if (ctx->enc_div_countdown == 0U)
     {
@@ -272,6 +282,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     }
 #endif
 
+    /* 电流零偏校准状态机，先校准U V相电流采样的零偏，后切换状态校准W相 */
     if ((ctx->i_offset_ready == 0U) && (ctx->pwm.outputs_enabled == 0U))
     {
         CurrentSenseOffset2_Push(&ctx->i_ab_offset, adc1, adc2);
@@ -300,6 +311,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         }
     }
 
+    /* 原始数据转实际物理电流（安培） */
     if (ctx->i_offset_ready != 0U)
     {
         ctx->ia_a = -CurrentSense_RawToCurrentA(adc1, ctx->i_u_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
@@ -315,20 +327,24 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         ctx->ic_a = 0.0f;
     }
 
+    /* 磁极校准时的状态机流转和校准参数计算 */
     MotorCalib_Tick(&ctx->calib, 1.0f / MOTORAPP_CTRL_HZ, ctx->pos_mech_rad);
 
-    MotorCalibCmd cmd = {0};
+    MotorCalibCmd cmd = {0}; // 磁极校准阶段给定Uq Ud 电角度数值缓冲区
     const uint8_t have_cmd = MotorCalib_GetCmd(&ctx->calib, &cmd);
     ctx->dbg_ud = cmd.ud;
     ctx->dbg_uq = cmd.uq;
     ctx->dbg_theta_e = cmd.theta_e;
     ctx->dbg_calib_state = (uint8_t)MotorCalib_State(&ctx->calib);
 
+    /* 处于校准状态 */
     if (have_cmd != 0U)
     {
         float s = 0.0f;
         float c = 1.0f;
+        /* 处于校准状态，计算当前设定角度的 sin 和 cos */
         BspTrig_SinCos(cmd.theta_e, &s, &c);
+
         MotorApp_OutputVdqSc(ctx, cmd.ud, cmd.uq, s, c);
     }
     else if ((ctx->i_loop_enabled != 0U) && (ctx->i_offset_ready != 0U))
@@ -428,14 +444,15 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     };
     Mt6835_Init(&ctx->encoder, &bus);
 
+    /* 磁极校准参数配置台 */
     MotorCalibParams calib = {
-        .pole_pairs = 7.0f,
-        .ud_align = 0.1f,
-        .uq_spin = 0.07f,
-        .omega_e_rad_s = 31.4159265f, /* 2*pi*5Hz */
-        .align_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.5f),
-        .spin_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.3f),
-        .min_move_rad = 0.2f,
+        .pole_pairs = 7.0f,                                 // 极对数
+        .ud_align = 0.1f,                                   // 对齐阶段d轴电压
+        .uq_spin = 0.07f,                                   // 开环拖动阶段q轴电压
+        .omega_e_rad_s = 31.4159265f,                       /* 开环拖动时的电角速度 2*pi*5Hz */
+        .align_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.5f), // 对齐阶段保持时间
+        .spin_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.3f),  // 拖动阶段持续时间
+        .min_move_rad = 0.2f,                               // 拖动阶段最小机械移动角度
     };
     MotorCalib_Init(&ctx->calib, &calib);
     ctx->elec_dir = 1;
@@ -465,7 +482,11 @@ void MotorApp_Loop(MotorApp *ctx)
     if (ctx->calib_request_pending != 0U)
     {
         ctx->calib_request_pending = 0U;
-        if (ctx->calib_request != 0U)
+        if (ctx->calib_request == 0U)
+        {
+            MotorApp_CalibAbort(ctx);
+        }
+        else
         {
             MotorApp_CalibStart(ctx);
         }
@@ -500,6 +521,7 @@ void MotorApp_Loop(MotorApp *ctx)
         }
         else
         {
+            /* a、b路采样电流，和a、b路采样电流的零偏值raw */
             JustFloat_Pack4(ctx->ia_a, ctx->ib_a, (float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, ctx->tx_frame);
         }
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
@@ -517,6 +539,7 @@ void MotorApp_Loop(MotorApp *ctx)
         }
         else
         {
+            /* U V W相电流采样零偏值 */
             JustFloat_Pack4((float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, (float)ctx->i_w_offset_raw, 1.0f,
                             ctx->tx_frame);
         }
@@ -526,6 +549,7 @@ void MotorApp_Loop(MotorApp *ctx)
 
     if (ctx->stream_page == 3U)
     {
+        /* FOC 电流环闭环监控：D轴实际电流，Q轴实际电流，D轴输出电压，Q轴输出电压 */
         JustFloat_Pack4(ctx->dbg_id_a, ctx->dbg_iq_a, ctx->dbg_ud_pu, ctx->dbg_uq_pu, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
@@ -548,6 +572,7 @@ void MotorApp_Loop(MotorApp *ctx)
     }
     else
     {
+        /* 非磁极校准状态：编码器原始值，转子机械角度，电角度零点，编码器方向 */
         JustFloat_Pack4((float)ctx->raw21, ctx->pos_mech_rad, ctx->elec_zero_offset_rad, (float)ctx->elec_dir, ctx->tx_frame);
     }
     (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));

@@ -16,6 +16,7 @@ void BspTrig_Init(void)
 #endif
 }
 
+/* 根据电角度theta_rad，算出sin cos并赋值到*sin_out *cos_out */
 void BspTrig_SinCos(float theta_rad, float *sin_out, float *cos_out)
 {
     if ((sin_out == 0) || (cos_out == 0))

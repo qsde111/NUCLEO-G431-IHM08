@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+/* 在C语言底层，枚举（enum）其实就是整型数字（int）。
+IDLE 默认是 0，ALIGN 是 1，SPIN 是 2，DONE 是 3，FAIL 是 4。 */
 typedef enum
 {
     MOTOR_CALIB_IDLE = 0,
@@ -24,8 +26,8 @@ typedef struct
     float omega_e_rad_s;
 
     /* Timing in control ticks (e.g. 20kHz tick) */
-    uint32_t align_ticks;
-    uint32_t spin_ticks;
+    uint32_t align_ticks; // 对齐阶段保持时间
+    uint32_t spin_ticks;  // 拖动阶段持续时间
 
     /* Minimum mechanical movement required to determine direction */
     float min_move_rad;
@@ -43,15 +45,15 @@ typedef struct
     MotorCalibState state;
     MotorCalibParams p;
 
-    uint32_t tick;
+    uint32_t tick; // 高精度软件定时器，每次自增代表时间过去了一次ADC中断周期
     float theta_e_cmd;
 
-    float theta_mech_align;
-    float theta_mech_start;
-    float theta_mech_end;
+    float theta_mech_align; // 对齐时-机械角度
+    float theta_mech_start; // 旋转开始时-机械角度
+    float theta_mech_end;   // 旋转结束时-机械角度
 
     int8_t dir;            /* +1 or -1 */
-    float zero_offset_rad; /* 0..2pi */
+    float zero_offset_rad; /* 0..2pi 电角度零点偏移量 */
 } MotorCalib;
 
 void MotorCalib_Init(MotorCalib *ctx, const MotorCalibParams *params);

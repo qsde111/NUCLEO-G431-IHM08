@@ -57,6 +57,7 @@ static uint8_t Svpwm_Sector(float u_alpha, float u_beta)
     }
 }
 
+/* 用α β轴给定电压进行反Clarke变换，零序电压注入算出三相占空比*/
 void Svpwm_Calc(float u_alpha, float u_beta, SvpwmOut *out)
 {
     if (out == 0)

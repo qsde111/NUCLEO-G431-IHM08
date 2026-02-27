@@ -30,6 +30,7 @@ static inline void CurrentSenseOffset2_Init(CurrentSenseOffset2 *ctx, uint32_t t
     ctx->ready = 0U;
 }
 
+/* 将双路ADC采集值放到求和累加器中，技术完毕后取均值放到ctx->offset_a、offset_b中 */
 static inline void CurrentSenseOffset2_Push(CurrentSenseOffset2 *ctx, uint16_t raw_a, uint16_t raw_b)
 {
     if (ctx == 0)
@@ -58,22 +59,20 @@ static inline uint8_t CurrentSenseOffset2_Ready(const CurrentSenseOffset2 *ctx)
     return (ctx != 0) ? ctx->ready : 0U;
 }
 
+/* 返回a路采样offset电流值 */
 static inline uint16_t CurrentSenseOffset2_OffsetA(const CurrentSenseOffset2 *ctx)
 {
     return (ctx != 0) ? ctx->offset_a : 0U;
 }
 
+/* 返回b路采样offset电流值 */
 static inline uint16_t CurrentSenseOffset2_OffsetB(const CurrentSenseOffset2 *ctx)
 {
     return (ctx != 0) ? ctx->offset_b : 0U;
 }
 
-static inline float CurrentSense_RawToCurrentA(uint16_t raw,
-                                              uint16_t offset_raw,
-                                              float adc_max_counts,
-                                              float vref_v,
-                                              float shunt_ohm,
-                                              float gain_v_per_v)
+static inline float CurrentSense_RawToCurrentA(uint16_t raw, uint16_t offset_raw, float adc_max_counts, float vref_v,
+                                               float shunt_ohm, float gain_v_per_v)
 {
     if ((adc_max_counts <= 0.0f) || (vref_v <= 0.0f) || (shunt_ohm <= 0.0f) || (gain_v_per_v <= 0.0f))
     {
