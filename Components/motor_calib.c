@@ -78,7 +78,7 @@ void MotorCalib_Abort(MotorCalib *ctx)
     ctx->theta_e_cmd = 0.0f;
 }
 
-/* 磁极校准时的状态机流转和给定Uq Ud 电角度计算 */
+/* 磁极校准时的状态机流转和校准参数计算 */
 void MotorCalib_Tick(MotorCalib *ctx, float dt_s, float theta_mech_rad)
 {
     if (ctx == 0)

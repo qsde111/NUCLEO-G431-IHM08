@@ -89,21 +89,31 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
 
     const float v_limit_v = (ctx->v_limit_pu > 0.0f) ? (ctx->vbus_v * ctx->v_limit_pu) : ctx->vbus_v;
 
-    /* d-axis PI with integrator clamping (anti-windup) */
+    /* PI in volts */
     const float pd = ctx->kp * ed;
-    float id_int = ctx->id_int_v + (ctx->ki * ed * ctx->dt_s);
-    float ud_v = pd + id_int;
-    ud_v = FocCurrentCtrl_Clamp(ud_v, -v_limit_v, v_limit_v);
-    ctx->id_int_v = ud_v - pd; // 抗饱和回调，将积分器限制在一个“刚好不会导致深度饱和”的临界点
-
-    /* q-axis PI with integrator clamping (anti-windup) */
     const float pq = ctx->kp * eq;
-    float iq_int = ctx->iq_int_v + (ctx->ki * eq * ctx->dt_s);
-    float uq_v = pq + iq_int;
-    uq_v = FocCurrentCtrl_Clamp(uq_v, -v_limit_v, v_limit_v);
-    ctx->iq_int_v = uq_v - pq;
 
-    /*缺少电压矢量限幅*/
+    float id_int = ctx->id_int_v + (ctx->ki * ed * ctx->dt_s);
+    float iq_int = ctx->iq_int_v + (ctx->ki * eq * ctx->dt_s);
+
+    float ud_v = pd + id_int;
+    float uq_v = pq + iq_int;
+
+    /*
+     * Vector magnitude saturation (SVPWM linear region):
+     * keep direction, scale both axes when |u_dq| exceeds limit.
+     */
+    const float mag = sqrtf((ud_v * ud_v) + (uq_v * uq_v));
+    if (mag > v_limit_v)
+    {
+        const float k = (mag > 0.0f) ? (v_limit_v / mag) : 0.0f;
+        ud_v *= k;
+        uq_v *= k;
+    }
+
+    /* Integrator clamping (anti-windup): force i-term to match saturated output */
+    ctx->id_int_v = ud_v - pd;
+    ctx->iq_int_v = uq_v - pq;
 
     out->id_a = id_a;
     out->iq_a = iq_a;

@@ -162,3 +162,10 @@ ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_
 - `JustFloat` 打印频率：`MotorApp_Loop()` 用 `HAL_GetTick()` 做了 1ms 限流，所以 **每秒 1000 帧**（校准运行时 D0 会 1ms 交替发送 debug/angle 两种帧，所以“角度帧”有效频率约 500Hz）。
 - 编码器读取：把 `Mt6835_ReadRaw21()` 移到 ADC Injected ISR（`MotorApp_OnAdcPair()`）里执行，用 `MOTORAPP_ENCODER_READ_DIV` 控制分频（默认 1 -> 20kHz）。
 - 三角函数：新增 `BSP/bsp_trig.[ch]`，用 **CORDIC** 做 `sin/cos`，并让 Park/反Park 共享同一组 `sin/cos`（每个控制 tick 只算一次）。
+
+## 2026-02-28：电流环工程化（矢量限幅/软件过流/Vbus/SPI-DMA）
+
+- `FocCurrentCtrl_StepSc()`：从“d/q 分量分别限幅”升级为 **dq 电压矢量幅值限幅**（|u_dq| <= Vbus*(1/sqrt(3))），并保持原本的积分器回调式抗饱和（用饱和后的输出回算积分项）。
+- 软件过流 trip：在 ADC ISR 中用采样电流做阈值判断，超过 `MOTORAPP_I_TRIP_A` 立刻 `DisableOutputs()` 并锁存 `fault_overcurrent`（用 `I` 无参数停机时清除锁存）。
+- Vbus 实测：用 ADC1 regular 读取 PA1(ADC1_IN2)，按分压 `MOTORAPP_VBUS_DIV=19.15` 换算并做一阶低通，更新到 `i_ctrl.vbus_v`（影响电压归一化与限幅）。
+- 编码器 SPI3 DMA 流水线：新增 `BSP/bsp_mt6835_dma.[ch]`，ADC ISR 内只触发 DMA，读取结果在下一 tick Pop（1 个 PWM 周期延迟，换来 ISR 时间显著下降）。

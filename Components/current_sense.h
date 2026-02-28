@@ -30,7 +30,7 @@ static inline void CurrentSenseOffset2_Init(CurrentSenseOffset2 *ctx, uint32_t t
     ctx->ready = 0U;
 }
 
-/* 将双路ADC采集值放到求和累加器中，技术完毕后取均值放到ctx->offset_a、offset_b中 */
+/* 将双路ADC采集值放到求和累加器中，计数完毕后取均值放到ctx->offset_a、offset_b中 */
 static inline void CurrentSenseOffset2_Push(CurrentSenseOffset2 *ctx, uint16_t raw_a, uint16_t raw_b)
 {
     if (ctx == 0)

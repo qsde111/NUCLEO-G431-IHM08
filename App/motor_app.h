@@ -19,6 +19,7 @@
  */
 
 #include "bsp_adc_inj_pair.h"
+#include "bsp_mt6835_dma.h"
 #include "bsp_spi3_fast.h"
 #include "bsp_tim1_pwm.h"
 #include "bsp_trig.h"
@@ -37,6 +38,7 @@ typedef struct
     HostCmdApp host_cmd;
     BspTim1Pwm pwm;
     BspAdcInjPair adc_inj;
+    BspMt6835Dma enc_dma;
     BspSpi3Fast spi;
     Mt6835 encoder;
 
@@ -45,6 +47,10 @@ typedef struct
     uint32_t raw21;
     float pos_mech_rad;
     uint16_t enc_div_countdown;
+
+    uint16_t vbus_raw;
+    float vbus_v;
+    uint32_t last_vbus_tick_ms;
 
     uint16_t adc1_raw;
     uint16_t adc2_raw;
@@ -57,6 +63,9 @@ typedef struct
     float ia_a;
     float ib_a;
     float ic_a;
+
+    float i_trip_a;
+    uint8_t fault_overcurrent;
 
     uint32_t adc_isr_count;
     uint8_t dbg_calib_state;

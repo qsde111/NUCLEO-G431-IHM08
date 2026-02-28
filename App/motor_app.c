@@ -2,6 +2,7 @@
 
 #include "main.h"
 
+#include <math.h>
 #include <string.h>
 
 /* Control tick is driven by ADC injected interrupt (TIM1 TRGO2) */
@@ -33,8 +34,25 @@
 #define MOTORAPP_VBUS_V (12.0f)
 #endif
 
+#ifndef MOTORAPP_VBUS_DIV
+/* Vbus = Vadc * MOTORAPP_VBUS_DIV (e.g. 12V -> ~0.626V with divider ~19.15) */
+#define MOTORAPP_VBUS_DIV (19.15f)
+#endif
+
+#ifndef MOTORAPP_VBUS_SAMPLE_MS
+#define MOTORAPP_VBUS_SAMPLE_MS (10U)
+#endif
+
+#ifndef MOTORAPP_VBUS_FILTER_ALPHA
+#define MOTORAPP_VBUS_FILTER_ALPHA (0.1f)
+#endif
+
 #ifndef MOTORAPP_I_LIMIT_A
 #define MOTORAPP_I_LIMIT_A (3.0f)
+#endif
+
+#ifndef MOTORAPP_I_TRIP_A
+#define MOTORAPP_I_TRIP_A (6.0f)
 #endif
 
 #ifndef MOTORAPP_ICTRL_KP
@@ -179,6 +197,16 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
     case 'I':
         if (cmd->has_value != 0U)
         {
+            if (ctx->fault_overcurrent != 0U)
+            {
+                /* Overcurrent fault latched: ignore enable requests until user stops/clears. */
+                ctx->i_loop_enable_pending = 0U;
+                ctx->i_loop_enabled = 0U;
+                ctx->iq_ref_a = 0.0f;
+                (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+                break;
+            }
+
             float iq = cmd->value;
             if (iq > ctx->i_limit_a)
             {
@@ -207,6 +235,7 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->i_loop_enabled = 0U;
             ctx->iq_ref_a = 0.0f;
             FocCurrentCtrl_Reset(&ctx->i_ctrl);
+            ctx->fault_overcurrent = 0U;
             (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
         }
         break;
@@ -268,12 +297,19 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     ctx->adc2_raw = adc2;
     ctx->adc_isr_count++;
 
-/* ISR中断内编码器读取分频 */
+    /* Pop encoder sample completed by SPI DMA ISR (pipeline: 1 tick latency) */
+    uint32_t raw21 = 0U;
+    if (BspMt6835Dma_PopRaw21(&ctx->enc_dma, &raw21) != 0U)
+    {
+        ctx->raw21 = raw21;
+        ctx->pos_mech_rad = Mt6835_Raw21ToRad(raw21);
+    }
+
+    /* Start next encoder DMA transaction (frequency divider) */
 #if (MOTORAPP_ENCODER_READ_DIV > 0U)
     if (ctx->enc_div_countdown == 0U)
     {
-        ctx->raw21 = Mt6835_ReadRaw21(&ctx->encoder);
-        ctx->pos_mech_rad = Mt6835_Raw21ToRad(ctx->raw21);
+        (void)BspMt6835Dma_TryStart(&ctx->enc_dma);
         ctx->enc_div_countdown = (uint16_t)(MOTORAPP_ENCODER_READ_DIV - 1U);
     }
     else
@@ -325,6 +361,30 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         ctx->ia_a = 0.0f;
         ctx->ib_a = 0.0f;
         ctx->ic_a = 0.0f;
+    }
+
+    /* Minimal software overcurrent trip (latched) */
+    if ((ctx->fault_overcurrent == 0U) && (ctx->i_offset_ready != 0U) && (ctx->pwm.outputs_enabled != 0U))
+    {
+        const float ia = fabsf(ctx->ia_a);
+        const float ib = fabsf(ctx->ib_a);
+        const float ic = fabsf(ctx->ic_a);
+        if ((ia > ctx->i_trip_a) || (ib > ctx->i_trip_a) || (ic > ctx->i_trip_a))
+        {
+            ctx->fault_overcurrent = 1U;
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 0U;
+            ctx->iq_ref_a = 0.0f;
+            ctx->vtest_active = 0U;
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
+            MotorCalib_Abort(&ctx->calib);
+            (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+        }
+    }
+
+    if (ctx->fault_overcurrent != 0U)
+    {
+        goto isr_exit;
     }
 
     /* 磁极校准时的状态机流转和校准参数计算 */
@@ -390,6 +450,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
     }
 
+isr_exit:
     S_GPIO_Port->BSRR = (uint32_t)S_Pin << 16U;
 }
 
@@ -412,6 +473,13 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->i_v_offset_raw = 0U;
     ctx->i_w_offset_raw = 0U;
 
+    ctx->vbus_raw = 0U;
+    ctx->vbus_v = MOTORAPP_VBUS_V;
+    ctx->last_vbus_tick_ms = HAL_GetTick();
+
+    ctx->i_trip_a = MOTORAPP_I_TRIP_A;
+    ctx->fault_overcurrent = 0U;
+
     ctx->enc_div_countdown = 0U;
 
     ctx->i_limit_a = MOTORAPP_I_LIMIT_A;
@@ -419,7 +487,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->iq_ref_a = 0.0f;
     ctx->i_loop_enabled = 0U;
     ctx->i_loop_enable_pending = 0U;
-    FocCurrentCtrl_Init(&ctx->i_ctrl, MOTORAPP_ICTRL_KP, MOTORAPP_ICTRL_KI, 1.0f / MOTORAPP_CTRL_HZ, MOTORAPP_VBUS_V,
+    FocCurrentCtrl_Init(&ctx->i_ctrl, MOTORAPP_ICTRL_KP, MOTORAPP_ICTRL_KI, 1.0f / MOTORAPP_CTRL_HZ, ctx->vbus_v,
                         MOTORAPP_V_LIMIT_PU);
 
     BspUartDma_Init(&ctx->uart, huart);
@@ -435,6 +503,8 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     (void)BspAdcInjPair_Start(&ctx->adc_inj);
 
     BspSpi3Fast_Init(&ctx->spi, hspi, cs_port, cs_pin);
+
+    BspMt6835Dma_Init(&ctx->enc_dma, hspi, cs_port, cs_pin);
 
     Mt6835BusOps bus = {
         .user = &ctx->spi,
@@ -503,12 +573,31 @@ void MotorApp_Loop(MotorApp *ctx)
         }
     }
 
-    const uint32_t now = HAL_GetTick();
-    if (now == ctx->last_stream_tick_ms)
+    /* Vbus slow sampling (ADC1 regular) */
+    const uint32_t now_ms = HAL_GetTick();
+    if ((now_ms - ctx->last_vbus_tick_ms) >= MOTORAPP_VBUS_SAMPLE_MS)
+    {
+        ctx->last_vbus_tick_ms = now_ms;
+
+        if (HAL_ADC_Start(ctx->adc_inj.hadc1) == HAL_OK)
+        {
+            if (HAL_ADC_PollForConversion(ctx->adc_inj.hadc1, 1U) == HAL_OK)
+            {
+                ctx->vbus_raw = (uint16_t)HAL_ADC_GetValue(ctx->adc_inj.hadc1);
+                const float vadc = (float)ctx->vbus_raw * (MOTORAPP_ADC_VREF_V / MOTORAPP_ADC_MAX_COUNTS);
+                const float vbus_new = vadc * MOTORAPP_VBUS_DIV;
+                ctx->vbus_v = ctx->vbus_v + (MOTORAPP_VBUS_FILTER_ALPHA * (vbus_new - ctx->vbus_v));
+                ctx->i_ctrl.vbus_v = ctx->vbus_v;
+            }
+            (void)HAL_ADC_Stop(ctx->adc_inj.hadc1);
+        }
+    }
+
+    if (now_ms == ctx->last_stream_tick_ms)
     {
         return;
     }
-    ctx->last_stream_tick_ms = now;
+    ctx->last_stream_tick_ms = now_ms;
 
     if (ctx->stream_page == 1U)
     {
