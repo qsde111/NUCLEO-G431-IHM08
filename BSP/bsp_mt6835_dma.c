@@ -47,6 +47,8 @@ uint8_t BspMt6835Dma_TryStart(BspMt6835Dma *ctx)
     ctx->busy = 1U;
 
     HAL_GPIO_WritePin(ctx->cs_port, ctx->cs_pin, GPIO_PIN_RESET);
+
+    /* spi总线工作给dma，解放cpu */
     if (HAL_SPI_TransmitReceive_DMA(ctx->hspi, ctx->tx, ctx->rx, (uint16_t)sizeof(ctx->tx)) != HAL_OK)
     {
         HAL_GPIO_WritePin(ctx->cs_port, ctx->cs_pin, GPIO_PIN_SET);
@@ -57,6 +59,7 @@ uint8_t BspMt6835Dma_TryStart(BspMt6835Dma *ctx)
     return 1U;
 }
 
+/* BspMt6835Dma *ctx中的角度编码器值搬运到*raw21_out */
 uint8_t BspMt6835Dma_PopRaw21(BspMt6835Dma *ctx, uint32_t *raw21_out)
 {
     if ((ctx == 0) || (raw21_out == 0))
@@ -101,6 +104,7 @@ static void BspMt6835Dma_OnError(BspMt6835Dma *ctx)
     ctx->busy = 0U;
 }
 
+/* spi工作结束，弱函数回调，交给cpu做比特位拼凑工作 */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     if ((g_ctx == 0) || (hspi == 0))

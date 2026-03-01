@@ -169,3 +169,15 @@ ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_
 - 软件过流 trip：在 ADC ISR 中用采样电流做阈值判断，超过 `MOTORAPP_I_TRIP_A` 立刻 `DisableOutputs()` 并锁存 `fault_overcurrent`（用 `I` 无参数停机时清除锁存）。
 - Vbus 实测：用 ADC1 regular 读取 PA1(ADC1_IN2)，按分压 `MOTORAPP_VBUS_DIV=19.15` 换算并做一阶低通，更新到 `i_ctrl.vbus_v`（影响电压归一化与限幅）。
 - 编码器 SPI3 DMA 流水线：新增 `BSP/bsp_mt6835_dma.[ch]`，ADC ISR 内只触发 DMA，读取结果在下一 tick Pop（1 个 PWM 周期延迟，换来 ISR 时间显著下降）。
+
+## 2026-03-01：速度估计对比（差分 vs PLL）+ MT6835 滤波带宽寄存器读写
+
+- 速度估计：在 ADC ISR 内（每次 Pop 到新的编码器角度时）同时计算
+  - 直接差分速度 `ω_diff = wrap(θ-θ_prev)/dt`
+  - PLL 观测器速度 `ω_pll`（PI-PLL：`e=wrap(θ-θ_hat)`，`ω=∫Ki*e + Kp*e`，`θ_hat+=ω*dt`）
+  - 两路速度输出都乘了 `elec_dir` 做符号统一：保证 **`Iq>0` 时速度为正**（即使 `elec_dir=-1`、编码器角度递减）。
+- `D3` 页：改为输出 `Id/Iq/ω_diff/ω_pll`（用于你对比噪声与滞后）。
+- MT6835 BW 寄存器：新增 HostCmd
+  - `M0`：读取 `reg 0x011` 并切到 `D4` 页打印（byte / high5 / BW[2:0] / op）
+  - `M1`：把 `reg 0x011` 的低三位 BW[2:0] 写成 `MOTORAPP_MT6835_REG_BW_BITS`（默认 7，保留高 5 位），再读回校验并切到 `D4`
+- 注意：`M0/M1` 会临时暂停编码器 DMA 读取（避免 SPI3 冲突），建议在 **电机输出关闭** 时操作。

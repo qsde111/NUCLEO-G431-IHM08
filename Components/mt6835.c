@@ -45,6 +45,45 @@ uint32_t Mt6835_ReadRaw21(Mt6835 *ctx)
     return (((uint32_t)b20_13 << 13) | ((uint32_t)b12_5 << 5) | ((uint32_t)b4_0_status >> 3));
 }
 
+/* 读取指定寄存器(8bit)，按手册：发送 0x3xxx(读指令+地址)，再发 1 字节 dummy 挤出寄存器值（总 24 clocks） */
+uint8_t Mt6835_ReadReg8(Mt6835 *ctx, uint16_t reg, uint8_t *val_out)
+{
+    if ((ctx == 0) || (val_out == 0) || (ctx->bus.transfer8 == 0) || (ctx->bus.cs_low == 0) || (ctx->bus.cs_high == 0))
+    {
+        return 0U;
+    }
+
+    const uint16_t cmd = (uint16_t)(0x3000U | (reg & 0x0FFFU));
+
+    ctx->bus.cs_low(ctx->bus.user);
+    (void)ctx->bus.transfer8(ctx->bus.user, (uint8_t)(cmd >> 8));
+    (void)ctx->bus.transfer8(ctx->bus.user, (uint8_t)(cmd & 0xFFU));
+    const uint8_t rx = ctx->bus.transfer8(ctx->bus.user, 0x00U);
+    ctx->bus.cs_high(ctx->bus.user);
+
+    *val_out = rx;
+    return 1U;
+}
+
+/* 写指定寄存器(8bit)，发送 0x6xxx(写指令+地址)，再发 1 字节数据（总 24 clocks） */
+uint8_t Mt6835_WriteReg8(Mt6835 *ctx, uint16_t reg, uint8_t val)
+{
+    if ((ctx == 0) || (ctx->bus.transfer8 == 0) || (ctx->bus.cs_low == 0) || (ctx->bus.cs_high == 0))
+    {
+        return 0U;
+    }
+
+    const uint16_t cmd = (uint16_t)(0x6000U | (reg & 0x0FFFU));
+
+    ctx->bus.cs_low(ctx->bus.user);
+    (void)ctx->bus.transfer8(ctx->bus.user, (uint8_t)(cmd >> 8));
+    (void)ctx->bus.transfer8(ctx->bus.user, (uint8_t)(cmd & 0xFFU));
+    (void)ctx->bus.transfer8(ctx->bus.user, val);
+    ctx->bus.cs_high(ctx->bus.user);
+
+    return 1U;
+}
+
 /* 编码器读取数值转换为机械角度 */
 float Mt6835_Raw21ToRad(uint32_t raw21)
 {

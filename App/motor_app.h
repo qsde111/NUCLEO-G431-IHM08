@@ -15,6 +15,8 @@
  * - `I`：关闭电流环并关闭 PWM 输出。
  * - `T<ud_pu>`：开环电压测试（Ud，单位为 per-unit，默认 0.05，带限幅）。
  * - `T0`：停止电压测试并关闭 PWM 输出。
+ * - `M0`：读取 MT6835 寄存器 `0x011`（内部滤波带宽 BW[2:0]）并切到 D4 页打印。
+ * - `M1`：写 MT6835 寄存器 `0x011` 的 BW[2:0]（高 5 位保持不变，BW 默认写 7），再读回校验并切到 D4 页打印。
  * - `D` / `D<n>`：切换/设置数据流页面（JustFloat_Pack4）。
  */
 
@@ -47,6 +49,7 @@ typedef struct
     uint32_t raw21;
     float pos_mech_rad;
     uint16_t enc_div_countdown;
+    uint8_t enc_dma_enable;
 
     uint16_t vbus_raw;
     float vbus_v;
@@ -64,6 +67,13 @@ typedef struct
     float ib_a;
     float ic_a;
 
+    uint8_t spd_valid;
+    float spd_theta_prev_rad;
+    float spd_omega_diff_rad_s;
+    float spd_pll_theta_hat_rad;
+    float spd_pll_omega_int_rad_s;
+    float spd_omega_pll_rad_s;
+
     float i_trip_a;
     uint8_t fault_overcurrent;
 
@@ -79,6 +89,8 @@ typedef struct
     float dbg_iq_a;
     float dbg_ud_pu;
     float dbg_uq_pu;
+    float dbg_omega_diff_rad_s;
+    float dbg_omega_pll_rad_s;
 
     HostCmd last_host_cmd;
     uint32_t last_host_cmd_tick_ms;
@@ -107,6 +119,10 @@ typedef struct
     uint8_t vtest_active;
     float vtest_ud;
     float vtest_uq;
+
+    uint8_t mt6835_reg011;
+    uint8_t mt6835_reg011_valid;
+    uint8_t mt6835_reg_op;
 } MotorApp;
 
 /**

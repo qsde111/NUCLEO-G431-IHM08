@@ -106,7 +106,7 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     const float mag = sqrtf((ud_v * ud_v) + (uq_v * uq_v));
     if (mag > v_limit_v)
     {
-        const float k = (mag > 0.0f) ? (v_limit_v / mag) : 0.0f;
+        const float k = (mag > 0.0f) ? (v_limit_v / mag) : 0.0f; // 防止除零异常
         ud_v *= k;
         uq_v *= k;
     }
@@ -119,6 +119,8 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     out->iq_a = iq_a;
     out->ud_v = ud_v;
     out->uq_v = uq_v;
+
+    /* 占空比生成的归一化 */
     out->ud_pu = ud_v / ctx->vbus_v;
     out->uq_pu = uq_v / ctx->vbus_v;
 }

@@ -67,6 +67,22 @@
 #define MOTORAPP_V_LIMIT_PU (0.57735026919f) /* 1/sqrt(3) */
 #endif
 
+#ifndef MOTORAPP_SPD_PLL_KP
+#define MOTORAPP_SPD_PLL_KP (1155.0f)
+#endif
+
+#ifndef MOTORAPP_SPD_PLL_KI
+#define MOTORAPP_SPD_PLL_KI (667185.0f)
+#endif
+
+#ifndef MOTORAPP_MT6835_REG_BW_ADDR
+#define MOTORAPP_MT6835_REG_BW_ADDR (0x011U)
+#endif
+
+#ifndef MOTORAPP_MT6835_REG_BW_BITS
+#define MOTORAPP_MT6835_REG_BW_BITS (7U)
+#endif
+
 #ifndef MOTORAPP_ENCODER_READ_DIV
 /* Encoder read rate inside ADC ISR: enc_hz = CTRL_HZ / DIV. DIV=1 -> 20kHz. */
 #define MOTORAPP_ENCODER_READ_DIV (1U) /* ADC 中断内的编码器读取频率 */
@@ -82,6 +98,21 @@ static float MotorApp_Wrap2Pi(float x)
         x -= two_pi;
     }
     while (x < 0.0f)
+    {
+        x += two_pi;
+    }
+    return x;
+}
+
+static float MotorApp_WrapPi(float x)
+{
+    const float pi = 3.14159265359f;
+    const float two_pi = 6.28318530718f;
+    while (x >= pi)
+    {
+        x -= two_pi;
+    }
+    while (x < -pi)
     {
         x += two_pi;
     }
@@ -240,6 +271,56 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
 
+    case 'M':
+    {
+        /* M0: read MT6835 reg 0x011 (filter BW), M1: write BW[2:0] then readback verify */
+        const uint8_t do_write = ((cmd->has_value != 0U) && (cmd->value != 0.0f)) ? 1U : 0U;
+
+        /* Pause encoder DMA pipeline to avoid SPI3 bus conflict with blocking register access. */
+        ctx->enc_dma_enable = 0U;
+        const uint32_t t0 = HAL_GetTick();
+        while ((ctx->enc_dma.busy != 0U) && ((HAL_GetTick() - t0) < 5U))
+        {
+        }
+        if (ctx->enc_dma.busy != 0U)
+        {
+            ctx->mt6835_reg011_valid = 0U;
+            ctx->mt6835_reg_op = 3U;
+            ctx->enc_dma_enable = 1U;
+            ctx->stream_page = 4U;
+            break;
+        }
+
+        uint8_t v = 0U;
+        if (Mt6835_ReadReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, &v) == 0U)
+        {
+            ctx->mt6835_reg011_valid = 0U;
+            ctx->mt6835_reg_op = 3U;
+            ctx->enc_dma_enable = 1U;
+            ctx->stream_page = 4U;
+            break;
+        }
+
+        ctx->mt6835_reg011 = v;
+        ctx->mt6835_reg011_valid = 1U;
+        ctx->mt6835_reg_op = 1U;
+
+        if (do_write != 0U)
+        {
+            const uint8_t new_v = (uint8_t)((v & 0xF8U) | ((uint8_t)MOTORAPP_MT6835_REG_BW_BITS & 0x07U));
+            uint8_t ok = Mt6835_WriteReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, new_v);
+            uint8_t rd = 0U;
+            ok = ((ok != 0U) && (Mt6835_ReadReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, &rd) != 0U)) ? 1U : 0U;
+            ctx->mt6835_reg011 = rd;
+            ctx->mt6835_reg011_valid = ok;
+            ctx->mt6835_reg_op = (ok != 0U) ? 2U : 3U;
+        }
+
+        ctx->enc_dma_enable = 1U;
+        ctx->stream_page = 4U;
+    }
+    break;
+
         /* 将转子强拖到U相 */
     case 'T':
         if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
@@ -295,6 +376,8 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
     ctx->adc1_raw = adc1;
     ctx->adc2_raw = adc2;
+
+    /* 心跳监控（Telemetry / Profiling）变量 */
     ctx->adc_isr_count++;
 
     /* Pop encoder sample completed by SPI DMA ISR (pipeline: 1 tick latency) */
@@ -303,11 +386,42 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     {
         ctx->raw21 = raw21;
         ctx->pos_mech_rad = Mt6835_Raw21ToRad(raw21);
+
+        const float theta = ctx->pos_mech_rad;
+        const float dt = ((float)MOTORAPP_ENCODER_READ_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
+        if (ctx->spd_valid == 0U)
+        {
+            ctx->spd_valid = 1U;
+            ctx->spd_theta_prev_rad = theta;
+            ctx->spd_omega_diff_rad_s = 0.0f;
+            ctx->spd_pll_theta_hat_rad = theta;
+            ctx->spd_pll_omega_int_rad_s = 0.0f;
+            ctx->spd_omega_pll_rad_s = 0.0f;
+        }
+        else
+        {
+            const float dtheta = MotorApp_WrapPi(theta - ctx->spd_theta_prev_rad);
+            ctx->spd_theta_prev_rad = theta;
+            ctx->spd_omega_diff_rad_s = dtheta / dt;
+
+            const float e = MotorApp_WrapPi(theta - ctx->spd_pll_theta_hat_rad);
+            ctx->spd_pll_omega_int_rad_s += (MOTORAPP_SPD_PLL_KI * e * dt);
+            ctx->spd_omega_pll_rad_s = ctx->spd_pll_omega_int_rad_s + (MOTORAPP_SPD_PLL_KP * e);
+            ctx->spd_pll_theta_hat_rad = MotorApp_Wrap2Pi(ctx->spd_pll_theta_hat_rad + (ctx->spd_omega_pll_rad_s * dt));
+        }
+
+        /* 统一符号：让 Iq>0 时 speed 为正（即使编码器角度递减，elec_dir=-1） */
+        ctx->dbg_omega_diff_rad_s = (float)ctx->elec_dir * ctx->spd_omega_diff_rad_s;
+        ctx->dbg_omega_pll_rad_s = (float)ctx->elec_dir * ctx->spd_omega_pll_rad_s;
     }
 
     /* Start next encoder DMA transaction (frequency divider) */
 #if (MOTORAPP_ENCODER_READ_DIV > 0U)
-    if (ctx->enc_div_countdown == 0U)
+    if (ctx->enc_dma_enable == 0U)
+    {
+        ctx->enc_div_countdown = 0U;
+    }
+    else if (ctx->enc_div_countdown == 0U)
     {
         (void)BspMt6835Dma_TryStart(&ctx->enc_dma);
         ctx->enc_div_countdown = (uint16_t)(MOTORAPP_ENCODER_READ_DIV - 1U);
@@ -382,6 +496,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         }
     }
 
+    /* 锁存错误标志，直接跳到函数末尾，退出本次中断*/
     if (ctx->fault_overcurrent != 0U)
     {
         goto isr_exit;
@@ -481,6 +596,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->fault_overcurrent = 0U;
 
     ctx->enc_div_countdown = 0U;
+    ctx->enc_dma_enable = 1U;
 
     ctx->i_limit_a = MOTORAPP_I_LIMIT_A;
     ctx->id_ref_a = 0.0f;
@@ -579,8 +695,10 @@ void MotorApp_Loop(MotorApp *ctx)
     {
         ctx->last_vbus_tick_ms = now_ms;
 
+        /* 启动ADC规则组转换通道 */
         if (HAL_ADC_Start(ctx->adc_inj.hadc1) == HAL_OK)
         {
+            /* 检测ADC转换完成标志位EOC，最多1ms(1U) */
             if (HAL_ADC_PollForConversion(ctx->adc_inj.hadc1, 1U) == HAL_OK)
             {
                 ctx->vbus_raw = (uint16_t)HAL_ADC_GetValue(ctx->adc_inj.hadc1);
@@ -589,7 +707,7 @@ void MotorApp_Loop(MotorApp *ctx)
                 ctx->vbus_v = ctx->vbus_v + (MOTORAPP_VBUS_FILTER_ALPHA * (vbus_new - ctx->vbus_v));
                 ctx->i_ctrl.vbus_v = ctx->vbus_v;
             }
-            (void)HAL_ADC_Stop(ctx->adc_inj.hadc1);
+            /* 注意：不要调用 HAL_ADC_Stop()，它会关闭 ADC 并强行停止 injected 转换，导致 20kHz 控制中断消失 */
         }
     }
 
@@ -628,8 +746,8 @@ void MotorApp_Loop(MotorApp *ctx)
         }
         else
         {
-            /* U V W相电流采样零偏值 */
-            JustFloat_Pack4((float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, (float)ctx->i_w_offset_raw, 1.0f,
+            /* U V W相电流采样零偏值、V_bus监测 */
+            JustFloat_Pack4((float)ctx->i_u_offset_raw, (float)ctx->i_v_offset_raw, (float)ctx->i_w_offset_raw, ctx->vbus_v,
                             ctx->tx_frame);
         }
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
@@ -638,8 +756,19 @@ void MotorApp_Loop(MotorApp *ctx)
 
     if (ctx->stream_page == 3U)
     {
-        /* FOC 电流环闭环监控：D轴实际电流，Q轴实际电流，D轴输出电压，Q轴输出电压 */
-        JustFloat_Pack4(ctx->dbg_id_a, ctx->dbg_iq_a, ctx->dbg_ud_pu, ctx->dbg_uq_pu, ctx->tx_frame);
+        /* D3：Id/Iq + 速度估计对比（直接差分 vs PLL） */
+        JustFloat_Pack4(ctx->dbg_id_a, ctx->dbg_iq_a, ctx->dbg_omega_diff_rad_s, ctx->dbg_omega_pll_rad_s, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 4U)
+    {
+        /* D4：MT6835 reg0x011 读写调试：reg(byte), high5, BW[2:0], op(1=read,2=write+verify,3=fail) */
+        const uint8_t reg = ctx->mt6835_reg011;
+        const uint8_t high5 = (uint8_t)((reg >> 3) & 0x1FU);
+        const uint8_t bw3 = (uint8_t)(reg & 0x07U);
+        JustFloat_Pack4((float)reg, (float)high5, (float)bw3, (float)ctx->mt6835_reg_op, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }
