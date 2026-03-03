@@ -10,6 +10,16 @@
 #define MOTORAPP_CTRL_HZ (20000.0f)
 #endif
 
+#ifndef MOTORAPP_STREAM_USE_ISR_DIV
+/* 0: use HAL_GetTick() (1kHz max). 1: use ADC ISR divider (supports 2k/5kHz, etc). */
+#define MOTORAPP_STREAM_USE_ISR_DIV (0U)
+#endif
+
+#ifndef MOTORAPP_STREAM_DIV
+/* Stream rate when MOTORAPP_STREAM_USE_ISR_DIV=1: stream_hz = CTRL_HZ / DIV. DIV=10->2kHz, DIV=4->5kHz. */
+#define MOTORAPP_STREAM_DIV (20U)
+#endif
+
 #ifndef MOTORAPP_ADC_MAX_COUNTS
 #define MOTORAPP_ADC_MAX_COUNTS (4095.0f)
 #endif
@@ -63,6 +73,80 @@
 #define MOTORAPP_ICTRL_KI (703.7f)
 #endif
 
+#ifndef MOTORAPP_BEMF_FF_ENABLE
+#define MOTORAPP_BEMF_FF_ENABLE (1U) // 反电动势前馈使能开关
+#endif
+
+#ifndef MOTORAPP_BEMF_KE_V_PER_RAD_S
+/* Ke from Kv: Ke = 60 / (2*pi*Kv_rpm_per_V)  (units: V / (rad/s)) */
+#define MOTORAPP_BEMF_KE_V_PER_RAD_S (0.00415f)
+#endif
+
+#ifndef MOTORAPP_SPEED_LOOP_DIV
+/* Speed loop update rate inside ADC ISR: spd_hz = CTRL_HZ / DIV. DIV=20 -> 1kHz. */
+#define MOTORAPP_SPEED_LOOP_DIV (20U)
+#endif
+
+#ifndef MOTORAPP_SCTRL_KP
+#define MOTORAPP_SCTRL_KP (0.02f)
+#endif
+
+#ifndef MOTORAPP_SCTRL_KI
+#define MOTORAPP_SCTRL_KI (0.001f)
+#endif
+
+#ifndef MOTORAPP_SCTRL_IQ_LIMIT_A
+#define MOTORAPP_SCTRL_IQ_LIMIT_A (1.0f)
+#endif
+
+/* 速度指令给定最小阈值，防止模拟信号波动启动速度环 */
+#ifndef MOTORAPP_SCTRL_STOP_EPS
+#define MOTORAPP_SCTRL_STOP_EPS (0.01f)
+#endif
+
+#ifndef MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S
+#define MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S (500.0f)
+#endif
+
+/* S-Curve轨迹规划宏开关 */
+#ifndef MOTORAPP_SPD_REF_S_CURVE_ENABLE
+#define MOTORAPP_SPD_REF_S_CURVE_ENABLE (0U)
+#endif
+
+#ifndef MOTORAPP_SPD_REF_A_MAX_RAD_S2
+#define MOTORAPP_SPD_REF_A_MAX_RAD_S2 (2000.0f)
+#endif
+
+#ifndef MOTORAPP_SPD_REF_J_MAX_RAD_S3
+#define MOTORAPP_SPD_REF_J_MAX_RAD_S3 (20000.0f)
+#endif
+
+#ifndef MOTORAPP_SPD_REF_K_A
+#define MOTORAPP_SPD_REF_K_A (50.0f)
+#endif
+
+#ifndef MOTORAPP_IQ_SWEEP_DIV
+/* Iq sweep update rate inside ADC ISR: sweep_hz = CTRL_HZ / DIV. */
+#define MOTORAPP_IQ_SWEEP_DIV (20U)
+#endif
+
+#ifndef MOTORAPP_IQ_SWEEP_AMP_A
+#define MOTORAPP_IQ_SWEEP_AMP_A (0.2f)
+#endif
+
+#ifndef MOTORAPP_IQ_SWEEP_F_START_HZ
+#define MOTORAPP_IQ_SWEEP_F_START_HZ (0.5f)
+#endif
+
+#ifndef MOTORAPP_IQ_SWEEP_F_END_HZ
+#define MOTORAPP_IQ_SWEEP_F_END_HZ (200.0f)
+#endif
+
+#ifndef MOTORAPP_IQ_SWEEP_DURATION_S
+#define MOTORAPP_IQ_SWEEP_DURATION_S (10.0f)
+#endif
+
+/* 电流环输出，电压矢量限幅(母线电压标幺值) */
 #ifndef MOTORAPP_V_LIMIT_PU
 #define MOTORAPP_V_LIMIT_PU (0.57735026919f) /* 1/sqrt(3) */
 #endif
@@ -75,6 +159,7 @@
 #define MOTORAPP_SPD_PLL_KI (667185.0f)
 #endif
 
+/* MT835系统带宽寄存器 */
 #ifndef MOTORAPP_MT6835_REG_BW_ADDR
 #define MOTORAPP_MT6835_REG_BW_ADDR (0x011U)
 #endif
@@ -138,6 +223,17 @@ static void MotorApp_CalibStart(MotorApp *ctx)
         return;
     }
 
+    ctx->spd_loop_enabled = 0U;
+    ctx->target_vel_rad_s = 0.0f;
+    FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+    ctx->spd_loop_div_countdown = 0U;
+    SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+    ctx->spd_loop_freeze = 0U;
+    SignalLogSweep_Reset(&ctx->iq_sweep);
+    ctx->iq_sweep_request_pending = 0U;
+    ctx->iq_sweep_div_countdown = 0U;
+    ctx->iq_sweep_a = 0.0f;
+
     ctx->calib_done = 0U;
     ctx->calib_fail = 0U;
     ctx->vtest_active = 0U;
@@ -155,6 +251,17 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
     {
         return;
     }
+
+    ctx->spd_loop_enabled = 0U;
+    ctx->target_vel_rad_s = 0.0f;
+    FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+    ctx->spd_loop_div_countdown = 0U;
+    SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+    ctx->spd_loop_freeze = 0U;
+    SignalLogSweep_Reset(&ctx->iq_sweep);
+    ctx->iq_sweep_request_pending = 0U;
+    ctx->iq_sweep_div_countdown = 0U;
+    ctx->iq_sweep_a = 0.0f;
 
     ctx->vtest_active = 0U;
     ctx->i_loop_enabled = 0U;
@@ -175,7 +282,7 @@ static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_th
         return;
     }
 
-    /* 反Park变换 */
+    /* Inverse Park Transform */
     const float u_alpha = (ud * cos_theta_e) - (uq * sin_theta_e);
     const float u_beta = (ud * sin_theta_e) + (uq * cos_theta_e);
 
@@ -206,9 +313,73 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
     case 'V':
-        if (cmd->has_value != 0U)
+        if ((cmd->has_value != 0U) && (fabsf(cmd->value) > MOTORAPP_SCTRL_STOP_EPS))
         {
-            ctx->target_vel_rad_s = cmd->value;
+            if (ctx->fault_overcurrent != 0U)
+            {
+                /* Overcurrent fault latched: ignore enable requests until user stops/clears. */
+                ctx->i_loop_enable_pending = 0U;
+                ctx->i_loop_enabled = 0U;
+                ctx->spd_loop_enabled = 0U;
+                ctx->target_vel_rad_s = 0.0f;
+                ctx->iq_ref_a = 0.0f;
+                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+                SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+                (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+                break;
+            }
+
+            float omega = cmd->value;
+            if (omega > MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S)
+            {
+                omega = MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S;
+            }
+            if (omega < -MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S)
+            {
+                omega = -MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S;
+            }
+
+            ctx->target_vel_rad_s = omega;
+            ctx->spd_loop_enabled = 1U;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, ctx->dbg_omega_pll_rad_s);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
+
+            ctx->id_ref_a = 0.0f;
+            ctx->iq_ref_a = 0.0f;
+
+            ctx->vtest_active = 0U;
+            MotorCalib_Abort(&ctx->calib);
+
+            if (ctx->i_loop_enabled == 0U)
+            {
+                ctx->i_loop_enable_pending = 1U;
+                (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
+            }
+        }
+        else
+        {
+            /* Stop speed loop and disable outputs. */
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 0U;
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
+            ctx->iq_ref_a = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
+            (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
         }
         break;
     case 'C':
@@ -233,10 +404,27 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
                 /* Overcurrent fault latched: ignore enable requests until user stops/clears. */
                 ctx->i_loop_enable_pending = 0U;
                 ctx->i_loop_enabled = 0U;
+                ctx->spd_loop_enabled = 0U;
+                ctx->target_vel_rad_s = 0.0f;
                 ctx->iq_ref_a = 0.0f;
+                ctx->spd_loop_div_countdown = 0U;
+                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+                SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
                 (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
                 break;
             }
+
+            /* Direct current command: leave speed loop mode. */
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
 
             float iq = cmd->value;
             if (iq > ctx->i_limit_a)
@@ -264,7 +452,17 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         {
             ctx->i_loop_enable_pending = 0U;
             ctx->i_loop_enabled = 0U;
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
             ctx->iq_ref_a = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
             FocCurrentCtrl_Reset(&ctx->i_ctrl);
             ctx->fault_overcurrent = 0U;
             (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
@@ -284,7 +482,7 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         if (ctx->enc_dma.busy != 0U)
         {
-            ctx->mt6835_reg011_valid = 0U;
+            ctx->mt6835_reg011_valid = 0U; // 标记数据无效
             ctx->mt6835_reg_op = 3U;
             ctx->enc_dma_enable = 1U;
             ctx->stream_page = 4U;
@@ -321,10 +519,27 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
     }
     break;
 
+    case 'F':
+        /* F1: start Iq log-sweep injection, F0: stop */
+        ctx->iq_sweep_request = ((cmd->has_value == 0U) || (cmd->value != 0.0f)) ? 1U : 0U;
+        ctx->iq_sweep_request_pending = 1U;
+        ctx->stream_page = 6U;
+        break;
+
         /* 将转子强拖到U相 */
     case 'T':
         if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
         {
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
             ctx->vtest_active = 0U;
             ctx->i_loop_enable_pending = 0U;
             ctx->i_loop_enabled = 0U;
@@ -334,6 +549,17 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         else
         {
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
+
             float ud = (cmd->has_value != 0U) ? cmd->value : 0.05f;
             if (ud > 0.2f)
             {
@@ -380,6 +606,23 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* 心跳监控（Telemetry / Profiling）变量 */
     ctx->adc_isr_count++;
 
+#if (MOTORAPP_STREAM_USE_ISR_DIV != 0U)
+#if (MOTORAPP_STREAM_DIV > 0U)
+    if (ctx->stream_div_countdown == 0U)
+    {
+        ctx->stream_div_countdown = (uint16_t)(MOTORAPP_STREAM_DIV - 1U);
+        if (ctx->stream_pending != 0xFFFFU)
+        {
+            ctx->stream_pending++;
+        }
+    }
+    else
+    {
+        ctx->stream_div_countdown--;
+    }
+#endif
+#endif
+
     /* Pop encoder sample completed by SPI DMA ISR (pipeline: 1 tick latency) */
     uint32_t raw21 = 0U;
     if (BspMt6835Dma_PopRaw21(&ctx->enc_dma, &raw21) != 0U)
@@ -389,6 +632,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
         const float theta = ctx->pos_mech_rad;
         const float dt = ((float)MOTORAPP_ENCODER_READ_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
+        /* 第一次启动，速度计算初始化 */
         if (ctx->spd_valid == 0U)
         {
             ctx->spd_valid = 1U;
@@ -417,6 +661,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
     /* Start next encoder DMA transaction (frequency divider) */
 #if (MOTORAPP_ENCODER_READ_DIV > 0U)
+    /* 主循环是否允许读编码器 */
     if (ctx->enc_dma_enable == 0U)
     {
         ctx->enc_div_countdown = 0U;
@@ -488,7 +733,17 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
             ctx->fault_overcurrent = 1U;
             ctx->i_loop_enable_pending = 0U;
             ctx->i_loop_enabled = 0U;
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
             ctx->iq_ref_a = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            ctx->spd_loop_freeze = 0U;
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
             ctx->vtest_active = 0U;
             FocCurrentCtrl_Reset(&ctx->i_ctrl);
             MotorCalib_Abort(&ctx->calib);
@@ -524,13 +779,133 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     }
     else if ((ctx->i_loop_enabled != 0U) && (ctx->i_offset_ready != 0U))
     {
+        /* Handle sweep start/stop request in ISR to keep dt consistent */
+        if (ctx->iq_sweep_request_pending != 0U)
+        {
+            ctx->iq_sweep_request_pending = 0U;
+            if (ctx->iq_sweep_request != 0U)
+            {
+                const float dt_sweep = ((float)MOTORAPP_IQ_SWEEP_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
+                SignalLogSweep_Start(&ctx->iq_sweep, MOTORAPP_IQ_SWEEP_AMP_A, MOTORAPP_IQ_SWEEP_F_START_HZ,
+                                     MOTORAPP_IQ_SWEEP_F_END_HZ, MOTORAPP_IQ_SWEEP_DURATION_S, dt_sweep);
+                ctx->iq_sweep_div_countdown = 0U;
+                ctx->iq_sweep_bias_a = ctx->iq_ref_a;
+                ctx->iq_sweep_a = 0.0f;
+
+                if (ctx->spd_loop_enabled != 0U)
+                {
+                    ctx->spd_loop_freeze = 1U;
+                    ctx->spd_loop_div_countdown = 0U;
+                }
+            }
+            else
+            {
+                SignalLogSweep_Stop(&ctx->iq_sweep);
+                ctx->iq_sweep_a = 0.0f;
+                ctx->iq_sweep_div_countdown = 0U;
+                ctx->iq_ref_a = ctx->iq_sweep_bias_a;
+                ctx->spd_loop_freeze = 0U;
+                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+                ctx->spd_loop_div_countdown = 0U;
+            }
+        }
+
+        /* Speed loop (outer): update Iq_ref at lower rate, current loop still runs at 20kHz */
+        if ((ctx->spd_loop_enabled != 0U) && (ctx->spd_loop_freeze == 0U))
+        {
+#if (MOTORAPP_SPEED_LOOP_DIV > 0U)
+            if (ctx->spd_loop_div_countdown == 0U)
+            {
+                float omega_ref = ctx->target_vel_rad_s;
+#if (MOTORAPP_SPD_REF_S_CURVE_ENABLE != 0U)
+                omega_ref = SCurveVel_Step(&ctx->spd_ref_plan, omega_ref);
+#else
+                SCurveVel_Reset(&ctx->spd_ref_plan, omega_ref);
+#endif
+                const float omega_meas = ctx->dbg_omega_pll_rad_s;
+                ctx->id_ref_a = 0.0f;
+                ctx->iq_ref_a = FocSpeedCtrl_Step(&ctx->spd_ctrl, omega_ref, omega_meas);
+                ctx->spd_loop_div_countdown = (uint16_t)(MOTORAPP_SPEED_LOOP_DIV - 1U);
+            }
+            else
+            {
+                ctx->spd_loop_div_countdown--;
+            }
+#else
+            float omega_ref = ctx->target_vel_rad_s;
+#if (MOTORAPP_SPD_REF_S_CURVE_ENABLE != 0U)
+            omega_ref = SCurveVel_Step(&ctx->spd_ref_plan, omega_ref);
+#else
+            SCurveVel_Reset(&ctx->spd_ref_plan, omega_ref);
+#endif
+            const float omega_meas = ctx->dbg_omega_pll_rad_s;
+            ctx->id_ref_a = 0.0f;
+            ctx->iq_ref_a = FocSpeedCtrl_Step(&ctx->spd_ctrl, omega_ref, omega_meas);
+#endif
+        }
+        else
+        {
+            ctx->spd_loop_div_countdown = 0U;
+            SCurveVel_Reset(&ctx->spd_ref_plan, ctx->target_vel_rad_s);
+        }
+
+        /* Iq log-sweep injection (for system identification): Iq = bias + sweep */
+        if (ctx->iq_sweep.active != 0U)
+        {
+#if (MOTORAPP_IQ_SWEEP_DIV > 0U)
+            if (ctx->iq_sweep_div_countdown == 0U)
+            {
+                ctx->iq_sweep_a = SignalLogSweep_Step(&ctx->iq_sweep);
+                ctx->iq_sweep_div_countdown = (uint16_t)(MOTORAPP_IQ_SWEEP_DIV - 1U);
+            }
+            else
+            {
+                ctx->iq_sweep_div_countdown--;
+            }
+#else
+            ctx->iq_sweep_a = SignalLogSweep_Step(&ctx->iq_sweep);
+#endif
+
+            float iq = ctx->iq_sweep_bias_a + ctx->iq_sweep_a;
+            if (iq > ctx->i_limit_a)
+            {
+                iq = ctx->i_limit_a;
+            }
+            if (iq < -ctx->i_limit_a)
+            {
+                iq = -ctx->i_limit_a;
+            }
+            ctx->iq_ref_a = iq;
+
+            /* sweep finished by duration */
+            if (ctx->iq_sweep.active == 0U)
+            {
+                ctx->iq_sweep_a = 0.0f;
+                ctx->iq_sweep_div_countdown = 0U;
+                ctx->iq_ref_a = ctx->iq_sweep_bias_a;
+                ctx->spd_loop_freeze = 0U;
+                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+                ctx->spd_loop_div_countdown = 0U;
+            }
+        }
+        else
+        {
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
+        }
+
         const float theta_e = MotorApp_ElecAngleRad(ctx);
         float s = 0.0f;
         float c = 1.0f;
         BspTrig_SinCos(theta_e, &s, &c);
 
         FocCurrentCtrlOut iout = {0};
-        FocCurrentCtrl_StepSc(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, s, c, ctx->id_ref_a, ctx->iq_ref_a, &iout);
+        float uq_ff_v = 0.0f;
+#if (MOTORAPP_BEMF_FF_ENABLE != 0U)
+        uq_ff_v = MOTORAPP_BEMF_KE_V_PER_RAD_S * ctx->dbg_omega_pll_rad_s;
+#endif
+        FocCurrentCtrl_StepScFf(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, s, c, ctx->id_ref_a, ctx->iq_ref_a, 0.0f,
+                                uq_ff_v, &iout);
 
         ctx->dbg_theta_e = theta_e;
         ctx->dbg_ud = iout.ud_pu;
@@ -606,6 +981,23 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     FocCurrentCtrl_Init(&ctx->i_ctrl, MOTORAPP_ICTRL_KP, MOTORAPP_ICTRL_KI, 1.0f / MOTORAPP_CTRL_HZ, ctx->vbus_v,
                         MOTORAPP_V_LIMIT_PU);
 
+    ctx->target_vel_rad_s = 0.0f;
+    ctx->spd_loop_enabled = 0U;
+    ctx->spd_loop_div_countdown = 0U;
+    FocSpeedCtrl_Init(&ctx->spd_ctrl, MOTORAPP_SCTRL_KP, MOTORAPP_SCTRL_KI,
+                      ((float)MOTORAPP_SPEED_LOOP_DIV) * (1.0f / MOTORAPP_CTRL_HZ), MOTORAPP_SCTRL_IQ_LIMIT_A);
+    SCurveVel_Init(&ctx->spd_ref_plan, ((float)MOTORAPP_SPEED_LOOP_DIV) * (1.0f / MOTORAPP_CTRL_HZ),
+                   MOTORAPP_SPD_REF_A_MAX_RAD_S2, MOTORAPP_SPD_REF_J_MAX_RAD_S3, MOTORAPP_SPD_REF_K_A);
+    SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+    ctx->spd_loop_freeze = 0U;
+
+    SignalLogSweep_Reset(&ctx->iq_sweep);
+    ctx->iq_sweep_request = 0U;
+    ctx->iq_sweep_request_pending = 0U;
+    ctx->iq_sweep_div_countdown = 0U;
+    ctx->iq_sweep_bias_a = 0.0f;
+    ctx->iq_sweep_a = 0.0f;
+
     BspUartDma_Init(&ctx->uart, huart);
     HostCmdApp_Init(&ctx->host_cmd, huart);
     (void)HostCmdApp_Start(&ctx->host_cmd);
@@ -645,6 +1037,8 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->elec_zero_offset_rad = 0.0f;
 
     ctx->last_stream_tick_ms = HAL_GetTick();
+    ctx->stream_pending = 0U;
+    ctx->stream_div_countdown = 0U;
     ctx->stream_page = 0U;
     ctx->vtest_active = 0U;
     ctx->vtest_ud = 0.0f;
@@ -711,11 +1105,23 @@ void MotorApp_Loop(MotorApp *ctx)
         }
     }
 
+#if (MOTORAPP_STREAM_USE_ISR_DIV != 0U)
+    if ((ctx->stream_pending == 0U) || (BspUartDma_TxReady(&ctx->uart) == 0U))
+    {
+        return;
+    }
+    ctx->stream_pending--;
+#else
     if (now_ms == ctx->last_stream_tick_ms)
     {
         return;
     }
     ctx->last_stream_tick_ms = now_ms;
+    if (BspUartDma_TxReady(&ctx->uart) == 0U)
+    {
+        return;
+    }
+#endif
 
     if (ctx->stream_page == 1U)
     {
@@ -769,6 +1175,22 @@ void MotorApp_Loop(MotorApp *ctx)
         const uint8_t high5 = (uint8_t)((reg >> 3) & 0x1FU);
         const uint8_t bw3 = (uint8_t)(reg & 0x07U);
         JustFloat_Pack4((float)reg, (float)high5, (float)bw3, (float)ctx->mt6835_reg_op, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 5U)
+    {
+        /* D5：速度环监控：omega_ref / omega_pll / Iq_ref / Iq_meas */
+        JustFloat_Pack4(ctx->spd_ref_plan.v, ctx->dbg_omega_pll_rad_s, ctx->iq_ref_a, ctx->dbg_iq_a, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 6U)
+    {
+        /* D6：系统辨识采集：omega_pll / Iq_meas / Iq_ref / sweep_active */
+        JustFloat_Pack4(ctx->dbg_omega_pll_rad_s, ctx->dbg_iq_a, ctx->iq_ref_a, (float)ctx->iq_sweep.active, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }

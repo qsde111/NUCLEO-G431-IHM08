@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+/* 将f1 f2 f3 f4 Justfloat帧尾搬运到frame_out[20] */
 void JustFloat_Pack4(float f1, float f2, float f3, float f4, uint8_t frame_out[20])
 {
     static const uint8_t tail[4] = {0x00U, 0x00U, 0x80U, 0x7fU};

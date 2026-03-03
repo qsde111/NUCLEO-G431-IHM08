@@ -181,3 +181,19 @@ ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_
   - `M0`：读取 `reg 0x011` 并切到 `D4` 页打印（byte / high5 / BW[2:0] / op）
   - `M1`：把 `reg 0x011` 的低三位 BW[2:0] 写成 `MOTORAPP_MT6835_REG_BW_BITS`（默认 7，保留高 5 位），再读回校验并切到 `D4`
 - 注意：`M0/M1` 会临时暂停编码器 DMA 读取（避免 SPI3 冲突），建议在 **电机输出关闭** 时操作。
+
+## 2026-03-01：速度环（外环）接入
+
+- HostCmd：`V<rad_s>` 使能速度环并设置目标机械角速度（rad/s）；`V0` / `V` 停止速度环并关 PWM 输出。
+- 实现：速度环输出 `Iq_ref`（单位 A），电流环保持 `Id_ref=0`，速度 PI 输出做限幅，并带回算式 anti-windup。
+- 调度：速度环在 ADC ISR 内按 `MOTORAPP_SPEED_LOOP_DIV` 分频执行（默认 20 -> 1kHz），电流环仍是 20kHz。
+- 观测：新增 `D5` 页输出 `omega_ref / omega_pll / Iq_ref / Iq_meas`。
+- 默认安全限幅：`MOTORAPP_SCTRL_IQ_LIMIT_A=1A`，`MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S=500rad/s`（都可自行改宏）。
+
+## 2026-03-03：反电动势前馈 + 速度S曲线 + 对数扫频注入 + 可选高频输出
+
+- 反电动势前馈：电流环新增 `FocCurrentCtrl_StepScFf()`，在 `Uq` 上叠加 `Ke * ω`（宏 `MOTORAPP_BEMF_FF_ENABLE` / `MOTORAPP_BEMF_KE_V_PER_RAD_S`）。
+- 速度给定 S 曲线：新增 `Components/s_curve_vel.h`，宏 `MOTORAPP_SPD_REF_S_CURVE_ENABLE` 控制是否启用（参数 `A_MAX/J_MAX/K_A`）。
+- 对数扫频发生器：新增 `Components/signal_log_sweep.h`，HostCmd：`F1` 启动、`F0` 停止；扫频期间会把 `Iq_ref = bias + sweep`（bias 为启动扫频瞬间的 Iq），若当前在速度环模式会临时冻结速度环更新。
+- 观测：新增 `D6` 页输出 `omega_pll / Iq_meas / Iq_ref / sweep_active`（系统辨识采集用）。
+- 可选提高 JustFloat 频率：宏 `MOTORAPP_STREAM_USE_ISR_DIV` + `MOTORAPP_STREAM_DIV`（例如 DIV=10 -> 2kHz，DIV=4 -> 5kHz；串口 2Mbps 下可用，但注意上位机吞吐与丢帧）。

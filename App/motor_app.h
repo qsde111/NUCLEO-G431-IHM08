@@ -8,15 +8,18 @@
  * HostCmd 命令表（建议以 `\r` / `\n` / `;` 结束；也支持 idle flush）：
  *
  * - `P<deg>`：占位（保存目标位置，当前不参与控制）。例如 `P90`。
- * - `V<rad_s>`：占位（保存目标速度，当前不参与控制）。例如 `V10`。
+ * - `V<rad_s>`：速度环（外环）目标机械角速度（rad/s）。例如 `V50`。
+ * - `V0` / `V`：停止速度环并关闭 PWM 输出。
  * - `C1` / `C`：启动一次校准（ALIGN -> SPIN -> DONE/FAIL），校准完成会自动关闭 PWM 输出。
  * - `C0`：中止校准并关闭 PWM 输出（软件停机手段；硬件急停更可靠）。
  * - `I<iq_A>`：设置电流环 `Iq_ref`（单位 A，带限幅），并在 offset 就绪后自动使能输出。
  * - `I`：关闭电流环并关闭 PWM 输出。
- * - `T<ud_pu>`：开环电压测试（Ud，单位为 per-unit，默认 0.05，带限幅）。
+ * - `T<ud_pu>`：开环电压强拖（Ud，单位为 per-unit，默认 0.05，带限幅）。
  * - `T0`：停止电压测试并关闭 PWM 输出。
  * - `M0`：读取 MT6835 寄存器 `0x011`（内部滤波带宽 BW[2:0]）并切到 D4 页打印。
  * - `M1`：写 MT6835 寄存器 `0x011` 的 BW[2:0]（高 5 位保持不变，BW 默认写 7），再读回校验并切到 D4 页打印。
+ * - `F1`：启动 Iq 注入对数扫频（系统辨识用），并切到 D6 页打印。
+ * - `F0`：停止扫频注入。
  * - `D` / `D<n>`：切换/设置数据流页面（JustFloat_Pack4）。
  */
 
@@ -28,10 +31,13 @@
 #include "bsp_uart_dma.h"
 #include "current_sense.h"
 #include "foc_current_ctrl.h"
+#include "foc_speed_ctrl.h"
 #include "host_cmd_app.h"
 #include "justfloat.h"
 #include "motor_calib.h"
 #include "mt6835.h"
+#include "s_curve_vel.h"
+#include "signal_log_sweep.h"
 #include "svpwm.h"
 
 typedef struct
@@ -46,10 +52,12 @@ typedef struct
 
     uint8_t tx_frame[20];
     uint32_t last_stream_tick_ms;
+    volatile uint16_t stream_pending;
+    uint16_t stream_div_countdown;
     uint32_t raw21;
     float pos_mech_rad;
     uint16_t enc_div_countdown;
-    uint8_t enc_dma_enable;
+    uint8_t enc_dma_enable; // 主循环读写MT6835寄存器时关闭ISR中断读取编码器，0=禁止
 
     uint16_t vbus_raw;
     float vbus_v;
@@ -70,9 +78,9 @@ typedef struct
     uint8_t spd_valid;
     float spd_theta_prev_rad;
     float spd_omega_diff_rad_s;
-    float spd_pll_theta_hat_rad;
-    float spd_pll_omega_int_rad_s;
-    float spd_omega_pll_rad_s;
+    float spd_pll_theta_hat_rad;   // pll观测器估算角度
+    float spd_pll_omega_int_rad_s; // pll观测器积分器
+    float spd_omega_pll_rad_s;     // pll观测器反馈速度
 
     float i_trip_a;
     uint8_t fault_overcurrent;
@@ -113,6 +121,19 @@ typedef struct
     uint8_t i_loop_enabled;
     uint8_t i_loop_enable_pending;
 
+    FocSpeedCtrl spd_ctrl;
+    uint8_t spd_loop_enabled;
+    uint16_t spd_loop_div_countdown; // 速度环分频计数器
+    uint8_t spd_loop_freeze;         // 扫频/实验时冻结速度环更新
+    SCurveVel spd_ref_plan;
+
+    SignalLogSweep iq_sweep;
+    uint8_t iq_sweep_request;
+    uint8_t iq_sweep_request_pending;
+    uint16_t iq_sweep_div_countdown;
+    float iq_sweep_bias_a;
+    float iq_sweep_a;
+
     uint8_t tx_debug_toggle;
     uint8_t stream_page;
 
@@ -122,7 +143,7 @@ typedef struct
 
     uint8_t mt6835_reg011;
     uint8_t mt6835_reg011_valid;
-    uint8_t mt6835_reg_op;
+    uint8_t mt6835_reg_op; // 寄存器状态码，1-读取成功 2-修改成功 3-读取失败
 } MotorApp;
 
 /**

@@ -67,8 +67,9 @@ static inline float FocCurrentCtrl_Clamp(float x, float lo, float hi)
 }
 
 /* Clarke/Park 变换将采样电流投影至 dq 轴，用电流环PI调节器计算d/q 轴目标电压，输入FocCurrentCtrlOut *out缓冲区中 */
-static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float sin_theta_e,
-                                         float cos_theta_e, float id_ref_a, float iq_ref_a, FocCurrentCtrlOut *out)
+static inline void FocCurrentCtrl_StepScFf(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float sin_theta_e,
+                                           float cos_theta_e, float id_ref_a, float iq_ref_a, float ud_ff_v, float uq_ff_v,
+                                           FocCurrentCtrlOut *out)
 {
     (void)ic_a; /* only needed for validity checks; Clarke assumes ia+ib+ic=0 */
 
@@ -77,10 +78,12 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
         return;
     }
 
+    /* Clarke Transform */
     const float inv_sqrt3 = 0.57735026919f; // 根号3的倒数
     const float i_alpha = ia_a;
     const float i_beta = (ia_a + 2.0f * ib_a) * inv_sqrt3;
 
+    /* Park Transform  */
     const float id_a = (i_alpha * cos_theta_e) + (i_beta * sin_theta_e);
     const float iq_a = (-i_alpha * sin_theta_e) + (i_beta * cos_theta_e);
 
@@ -96,8 +99,8 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     float id_int = ctx->id_int_v + (ctx->ki * ed * ctx->dt_s);
     float iq_int = ctx->iq_int_v + (ctx->ki * eq * ctx->dt_s);
 
-    float ud_v = pd + id_int;
-    float uq_v = pq + iq_int;
+    float ud_v = pd + id_int + ud_ff_v;
+    float uq_v = pq + iq_int + uq_ff_v;
 
     /*
      * Vector magnitude saturation (SVPWM linear region):
@@ -112,8 +115,8 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     }
 
     /* Integrator clamping (anti-windup): force i-term to match saturated output */
-    ctx->id_int_v = ud_v - pd;
-    ctx->iq_int_v = uq_v - pq;
+    ctx->id_int_v = ud_v - pd - ud_ff_v;
+    ctx->iq_int_v = uq_v - pq - uq_ff_v;
 
     out->id_a = id_a;
     out->iq_a = iq_a;
@@ -123,6 +126,12 @@ static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float 
     /* 占空比生成的归一化 */
     out->ud_pu = ud_v / ctx->vbus_v;
     out->uq_pu = uq_v / ctx->vbus_v;
+}
+
+static inline void FocCurrentCtrl_StepSc(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float sin_theta_e,
+                                         float cos_theta_e, float id_ref_a, float iq_ref_a, FocCurrentCtrlOut *out)
+{
+    FocCurrentCtrl_StepScFf(ctx, ia_a, ib_a, ic_a, sin_theta_e, cos_theta_e, id_ref_a, iq_ref_a, 0.0f, 0.0f, out);
 }
 
 static inline void FocCurrentCtrl_Step(FocCurrentCtrl *ctx, float ia_a, float ib_a, float ic_a, float theta_e_rad,

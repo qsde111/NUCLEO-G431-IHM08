@@ -65,11 +65,12 @@ void Svpwm_Calc(float u_alpha, float u_beta, SvpwmOut *out)
         return;
     }
 
-    /* Min-max common-mode injection SVPWM (u_* in V/Vbus, typical magnitude <= ~0.577) */
+    /* Inverse Clarke Transform */
     float va = u_alpha;
     float vb = (-0.5f * u_alpha) + (0.86602540378f * u_beta);
     float vc = (-0.5f * u_alpha) - (0.86602540378f * u_beta);
 
+    /* Min-max common-mode injection SVPWM (u_* in V/Vbus, typical magnitude <= ~0.577) */
     const float v_max = Svpwm_Max3(va, vb, vc);
     const float v_min = Svpwm_Min3(va, vb, vc);
     const float v_off = -0.5f * (v_max + v_min);
