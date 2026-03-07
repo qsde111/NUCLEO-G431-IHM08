@@ -39,6 +39,7 @@
 #include "justfloat.h"
 #include "motor_calib.h"
 #include "mt6835.h"
+#include "mt6835_angle_corr.h"
 #include "s_curve_vel.h"
 #include "signal_log_sweep.h"
 #include "svpwm.h"
@@ -57,7 +58,8 @@ typedef struct
     uint32_t last_stream_tick_ms;
     volatile uint16_t stream_pending;
     uint16_t stream_div_countdown;
-    uint32_t raw21;
+    uint32_t raw21;      /* raw MT6835 count for logging / offline calibration */
+    uint32_t raw21_corr; /* corrected MT6835 count for control */
     float pos_mech_rad;
     uint16_t enc_div_countdown;
     uint8_t enc_dma_enable; // 主循环读写MT6835寄存器时关闭ISR中断读取编码器，0=禁止

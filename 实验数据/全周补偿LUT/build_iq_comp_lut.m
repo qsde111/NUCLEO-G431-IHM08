@@ -12,7 +12,7 @@
 clear; clc; % close all;
 
 %% ===== 用户配置 =====
-filename = 'V=15_D7.csv';  % 替换为你的文件名
+filename = 'V=100_D7.csv';  % 替换为你的文件名
 N = 1024;                 % LUT 点数（建议 1024 起步，必要时 2048）
 
 match = regexp(filename, 'V=([\d.]+)', 'tokens');
@@ -37,7 +37,7 @@ filter_mode = 'hmax';
 Hmax = 200;               % filter_mode='hmax' 时有效（N=1024 下 200 阶足够覆盖 84 阶）
 orders = [2 4 12 14 36];  % filter_mode='orders' 时有效
 
-export_c_header = true;
+export_c_header = false;
 out_header = sprintf('iq_comp_lut_v%d.h', V_value);
 array_name = sprintf('iq_comp_lut_a_v%d',V_value);
 %% ===== 读数据 =====

@@ -5,7 +5,7 @@
  * - 20: include `iq_comp_lut_v20.h`
  */
 #ifndef IQ_LUT_COMP_TABLE_V_RAD_S
-#define IQ_LUT_COMP_TABLE_V_RAD_S (20)
+#define IQ_LUT_COMP_TABLE_V_RAD_S (15)
 #endif
 
 #if (IQ_LUT_COMP_TABLE_V_RAD_S == 15)

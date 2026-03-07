@@ -7,6 +7,7 @@ clear; clc; % close all;
 % 定义文件列表与对应给定速度
 filenames = {'V=15_D7.csv', 'V=20_D7.csv', 'V=50_D7.csv', 'V=100_D7.csv'};
 V_refs = [15, 20, 50, 100]; % 单位: rad/s
+V_refs = [15,100, 200, 300]; % 单位: rad/s
 
 % 采样参数
 Ts = 0.0005;            % 采样周期 0.5ms

@@ -114,7 +114,7 @@
 
 /* Iq LUT 补偿使能开关（前馈）：低速实验用（查表 + 线性插值） */
 #ifndef MOTORAPP_IQ_LUT_COMP_ENABLE
-#define MOTORAPP_IQ_LUT_COMP_ENABLE (1U)
+#define MOTORAPP_IQ_LUT_COMP_ENABLE (0U)
 #endif
 
 #ifndef MOTORAPP_IQ_LUT_COMP_GAIN
@@ -626,7 +626,8 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     if (BspMt6835Dma_PopRaw21(&ctx->enc_dma, &raw21) != 0U)
     {
         ctx->raw21 = raw21;
-        ctx->pos_mech_rad = Mt6835_Raw21ToRad(raw21);
+        ctx->raw21_corr = Mt6835AngleCorr_ApplyRaw21(raw21);
+        ctx->pos_mech_rad = Mt6835_Raw21ToRad(ctx->raw21_corr);
 
         const float theta = ctx->pos_mech_rad;
         const float dt = ((float)MOTORAPP_ENCODER_READ_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
@@ -874,7 +875,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
             const float omega_abs = fabsf(ctx->spd_ref_plan.v);
             if ((omega_abs >= MOTORAPP_IQ_LUT_COMP_MIN_OMEGA_RAD_S) && (omega_abs <= MOTORAPP_IQ_LUT_COMP_MAX_OMEGA_RAD_S))
             {
-                iq_comp_a = MOTORAPP_IQ_LUT_COMP_GAIN * IqLutComp_SampleRaw21(ctx->raw21);
+                iq_comp_a = MOTORAPP_IQ_LUT_COMP_GAIN * IqLutComp_SampleRaw21(ctx->raw21_corr);
                 if (iq_comp_a > MOTORAPP_IQ_LUT_COMP_LIMIT_A)
                 {
                     iq_comp_a = MOTORAPP_IQ_LUT_COMP_LIMIT_A;
