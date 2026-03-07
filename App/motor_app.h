@@ -21,6 +21,9 @@
  * - `F1`：启动 Iq 注入对数扫频（系统辨识用），并切到 D6 页打印。
  * - `F0`：停止扫频注入。
  * - `D` / `D<n>`：切换/设置数据流页面（JustFloat_Pack4）。
+ *   - `D5`：omega_ref / omega_pll / Iq_ref / Iq_meas
+ *   - `D7`：raw21 / omega_pll / Iq_ref / Iq_meas（用于按角度做全周期 LUT 分析）
+ *   - `D8`：omega_pll / Iq_ref / Iq_comp / Iq_cmd（补偿观测）
  */
 
 #include "bsp_adc_inj_pair.h"
@@ -95,6 +98,8 @@ typedef struct
     float dbg_duty_c;
     float dbg_id_a;
     float dbg_iq_a;
+    float dbg_iq_cmd_a; /* speed loop (or direct) + sweep, clamped */
+    float dbg_iq_comp_a;
     float dbg_ud_pu;
     float dbg_uq_pu;
     float dbg_omega_diff_rad_s;
@@ -124,14 +129,12 @@ typedef struct
     FocSpeedCtrl spd_ctrl;
     uint8_t spd_loop_enabled;
     uint16_t spd_loop_div_countdown; // 速度环分频计数器
-    uint8_t spd_loop_freeze;         // 扫频/实验时冻结速度环更新
     SCurveVel spd_ref_plan;
 
     SignalLogSweep iq_sweep;
     uint8_t iq_sweep_request;
     uint8_t iq_sweep_request_pending;
     uint16_t iq_sweep_div_countdown;
-    float iq_sweep_bias_a;
     float iq_sweep_a;
 
     uint8_t tx_debug_toggle;

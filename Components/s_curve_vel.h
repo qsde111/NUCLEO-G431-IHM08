@@ -59,16 +59,15 @@ static inline float SCurveVel_Step(SCurveVel *ctx, float v_tgt)
     }
 
     const float e = v_tgt - ctx->v;
-    float a_des = ctx->k_a * e;
-    a_des = SCurveVel_Clamp(a_des, -ctx->a_max, ctx->a_max);
+    float a_des = ctx->k_a * e;                              // 期望加速度
+    a_des = SCurveVel_Clamp(a_des, -ctx->a_max, ctx->a_max); // 钳位期望加速度
 
-    const float da_max = ctx->j_max * ctx->dt_s;
-    const float da = SCurveVel_Clamp(a_des - ctx->a, -da_max, da_max);
-    ctx->a = SCurveVel_Clamp(ctx->a + da, -ctx->a_max, ctx->a_max);
-    ctx->v += ctx->a * ctx->dt_s;
+    const float da_max = ctx->j_max * ctx->dt_s;                       // 一个控制周期内加速度最大变化量
+    const float da = SCurveVel_Clamp(a_des - ctx->a, -da_max, da_max); // 计算+钳位加速度增量
+    ctx->a = SCurveVel_Clamp(ctx->a + da, -ctx->a_max, ctx->a_max);    // 更新加速度
+    ctx->v += ctx->a * ctx->dt_s;                                      // 加速度积分得到输出平滑速度
 
     return ctx->v;
 }
 
 #endif /* COMPONENTS_S_CURVE_VEL_H */
-

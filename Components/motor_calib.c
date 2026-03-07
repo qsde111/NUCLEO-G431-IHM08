@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+/* 映射到 (0, 2pi] 区间内 */
 static float MotorCalib_Wrap2Pi(float x)
 {
     const float two_pi = 6.28318530718f;
@@ -16,6 +17,7 @@ static float MotorCalib_Wrap2Pi(float x)
     return x;
 }
 
+/* 映射到 (-pi, pi] 区间内 */
 static float MotorCalib_WrapPi(float x)
 {
     const float pi = 3.14159265359f;
@@ -129,7 +131,7 @@ void MotorCalib_Tick(MotorCalib *ctx, float dt_s, float theta_mech_rad)
     }
 }
 
-/* 将磁极校准阶段的Uq Ud 电角度给定值从MotorCalib *ctx搬运到外部缓冲区MotorCalibCmd *out */
+/* 计算磁极校准各阶段Uq、Ud、电角度给定值从MotorCalib *ctx搬运到外部缓冲区MotorCalibCmd *out */
 uint8_t MotorCalib_GetCmd(const MotorCalib *ctx, MotorCalibCmd *out)
 {
     if ((ctx == 0) || (out == 0))

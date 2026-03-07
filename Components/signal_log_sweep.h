@@ -35,7 +35,8 @@ static inline void SignalLogSweep_Reset(SignalLogSweep *ctx)
     ctx->done = 0U;
 }
 
-static inline void SignalLogSweep_Start(SignalLogSweep *ctx, float amp, float f_start_hz, float f_end_hz, float duration_s, float dt_s)
+static inline void SignalLogSweep_Start(SignalLogSweep *ctx, float amp, float f_start_hz, float f_end_hz, float duration_s,
+                                        float dt_s)
 {
     if ((ctx == 0) || (dt_s <= 0.0f) || (duration_s <= 0.0f) || (f_start_hz <= 0.0f) || (f_end_hz <= 0.0f))
     {
@@ -111,4 +112,3 @@ static inline float SignalLogSweep_Step(SignalLogSweep *ctx)
 }
 
 #endif /* COMPONENTS_SIGNAL_LOG_SWEEP_H */
-

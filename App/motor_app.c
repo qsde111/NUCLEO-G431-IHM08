@@ -2,6 +2,9 @@
 
 #include "main.h"
 
+#include "iq_lut_comp.h"
+#include "signal_config.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -12,12 +15,12 @@
 
 #ifndef MOTORAPP_STREAM_USE_ISR_DIV
 /* 0: use HAL_GetTick() (1kHz max). 1: use ADC ISR divider (supports 2k/5kHz, etc). */
-#define MOTORAPP_STREAM_USE_ISR_DIV (0U)
+#define MOTORAPP_STREAM_USE_ISR_DIV (1U)
 #endif
 
 #ifndef MOTORAPP_STREAM_DIV
 /* Stream rate when MOTORAPP_STREAM_USE_ISR_DIV=1: stream_hz = CTRL_HZ / DIV. DIV=10->2kHz, DIV=4->5kHz. */
-#define MOTORAPP_STREAM_DIV (20U)
+#define MOTORAPP_STREAM_DIV (10U)
 #endif
 
 #ifndef MOTORAPP_ADC_MAX_COUNTS
@@ -66,15 +69,16 @@
 #endif
 
 #ifndef MOTORAPP_ICTRL_KP
-#define MOTORAPP_ICTRL_KP (0.5655f)
+#define MOTORAPP_ICTRL_KP (0.1131f)
 #endif
 
 #ifndef MOTORAPP_ICTRL_KI
-#define MOTORAPP_ICTRL_KI (703.7f)
+#define MOTORAPP_ICTRL_KI (1407.4f)
 #endif
 
+/* 反电动势前馈使能开关 */
 #ifndef MOTORAPP_BEMF_FF_ENABLE
-#define MOTORAPP_BEMF_FF_ENABLE (1U) // 反电动势前馈使能开关
+#define MOTORAPP_BEMF_FF_ENABLE (1U)
 #endif
 
 #ifndef MOTORAPP_BEMF_KE_V_PER_RAD_S
@@ -88,11 +92,11 @@
 #endif
 
 #ifndef MOTORAPP_SCTRL_KP
-#define MOTORAPP_SCTRL_KP (0.02f)
+#define MOTORAPP_SCTRL_KP (0.01f)
 #endif
 
 #ifndef MOTORAPP_SCTRL_KI
-#define MOTORAPP_SCTRL_KI (0.001f)
+#define MOTORAPP_SCTRL_KI (0.01f)
 #endif
 
 #ifndef MOTORAPP_SCTRL_IQ_LIMIT_A
@@ -108,6 +112,27 @@
 #define MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S (500.0f)
 #endif
 
+/* Iq LUT 补偿使能开关（前馈）：低速实验用（查表 + 线性插值） */
+#ifndef MOTORAPP_IQ_LUT_COMP_ENABLE
+#define MOTORAPP_IQ_LUT_COMP_ENABLE (1U)
+#endif
+
+#ifndef MOTORAPP_IQ_LUT_COMP_GAIN
+#define MOTORAPP_IQ_LUT_COMP_GAIN (1.0f)
+#endif
+
+#ifndef MOTORAPP_IQ_LUT_COMP_MIN_OMEGA_RAD_S
+#define MOTORAPP_IQ_LUT_COMP_MIN_OMEGA_RAD_S (5.0f)
+#endif
+
+#ifndef MOTORAPP_IQ_LUT_COMP_MAX_OMEGA_RAD_S
+#define MOTORAPP_IQ_LUT_COMP_MAX_OMEGA_RAD_S (30.0f)
+#endif
+
+#ifndef MOTORAPP_IQ_LUT_COMP_LIMIT_A
+#define MOTORAPP_IQ_LUT_COMP_LIMIT_A (1.0f)
+#endif
+
 /* S-Curve轨迹规划宏开关 */
 #ifndef MOTORAPP_SPD_REF_S_CURVE_ENABLE
 #define MOTORAPP_SPD_REF_S_CURVE_ENABLE (0U)
@@ -121,29 +146,9 @@
 #define MOTORAPP_SPD_REF_J_MAX_RAD_S3 (20000.0f)
 #endif
 
+/* 轨迹发生器作为P控制器，速度差->期望加速度 比例系数 */
 #ifndef MOTORAPP_SPD_REF_K_A
 #define MOTORAPP_SPD_REF_K_A (50.0f)
-#endif
-
-#ifndef MOTORAPP_IQ_SWEEP_DIV
-/* Iq sweep update rate inside ADC ISR: sweep_hz = CTRL_HZ / DIV. */
-#define MOTORAPP_IQ_SWEEP_DIV (20U)
-#endif
-
-#ifndef MOTORAPP_IQ_SWEEP_AMP_A
-#define MOTORAPP_IQ_SWEEP_AMP_A (0.2f)
-#endif
-
-#ifndef MOTORAPP_IQ_SWEEP_F_START_HZ
-#define MOTORAPP_IQ_SWEEP_F_START_HZ (0.5f)
-#endif
-
-#ifndef MOTORAPP_IQ_SWEEP_F_END_HZ
-#define MOTORAPP_IQ_SWEEP_F_END_HZ (200.0f)
-#endif
-
-#ifndef MOTORAPP_IQ_SWEEP_DURATION_S
-#define MOTORAPP_IQ_SWEEP_DURATION_S (10.0f)
 #endif
 
 /* 电流环输出，电压矢量限幅(母线电压标幺值) */
@@ -159,7 +164,7 @@
 #define MOTORAPP_SPD_PLL_KI (667185.0f)
 #endif
 
-/* MT835系统带宽寄存器 */
+/* MT835系统带宽寄存器地址 */
 #ifndef MOTORAPP_MT6835_REG_BW_ADDR
 #define MOTORAPP_MT6835_REG_BW_ADDR (0x011U)
 #endif
@@ -228,7 +233,6 @@ static void MotorApp_CalibStart(MotorApp *ctx)
     FocSpeedCtrl_Reset(&ctx->spd_ctrl);
     ctx->spd_loop_div_countdown = 0U;
     SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-    ctx->spd_loop_freeze = 0U;
     SignalLogSweep_Reset(&ctx->iq_sweep);
     ctx->iq_sweep_request_pending = 0U;
     ctx->iq_sweep_div_countdown = 0U;
@@ -257,7 +261,6 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
     FocSpeedCtrl_Reset(&ctx->spd_ctrl);
     ctx->spd_loop_div_countdown = 0U;
     SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-    ctx->spd_loop_freeze = 0U;
     SignalLogSweep_Reset(&ctx->iq_sweep);
     ctx->iq_sweep_request_pending = 0U;
     ctx->iq_sweep_div_countdown = 0U;
@@ -344,7 +347,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, ctx->dbg_omega_pll_rad_s);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -373,7 +375,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -420,7 +421,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -458,7 +458,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -520,7 +519,7 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
     break;
 
     case 'F':
-        /* F1: start Iq log-sweep injection, F0: stop */
+        /* F1: start log-sweep injection on Iq_cmd, F0: stop */
         ctx->iq_sweep_request = ((cmd->has_value == 0U) || (cmd->value != 0.0f)) ? 1U : 0U;
         ctx->iq_sweep_request_pending = 1U;
         ctx->stream_page = 6U;
@@ -535,7 +534,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -554,7 +552,6 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -606,6 +603,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* 心跳监控（Telemetry / Profiling）变量 */
     ctx->adc_isr_count++;
 
+    /* 打印分频 */
 #if (MOTORAPP_STREAM_USE_ISR_DIV != 0U)
 #if (MOTORAPP_STREAM_DIV > 0U)
     if (ctx->stream_div_countdown == 0U)
@@ -661,7 +659,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
     /* Start next encoder DMA transaction (frequency divider) */
 #if (MOTORAPP_ENCODER_READ_DIV > 0U)
-    /* 主循环是否允许读编码器 */
+    /* 主循环是否允许读编码器(写编码器寄存器时冻结) */
     if (ctx->enc_dma_enable == 0U)
     {
         ctx->enc_div_countdown = 0U;
@@ -739,7 +737,6 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
             ctx->spd_loop_div_countdown = 0U;
             FocSpeedCtrl_Reset(&ctx->spd_ctrl);
             SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-            ctx->spd_loop_freeze = 0U;
             SignalLogSweep_Reset(&ctx->iq_sweep);
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
@@ -785,33 +782,28 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
             ctx->iq_sweep_request_pending = 0U;
             if (ctx->iq_sweep_request != 0U)
             {
-                const float dt_sweep = ((float)MOTORAPP_IQ_SWEEP_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
-                SignalLogSweep_Start(&ctx->iq_sweep, MOTORAPP_IQ_SWEEP_AMP_A, MOTORAPP_IQ_SWEEP_F_START_HZ,
-                                     MOTORAPP_IQ_SWEEP_F_END_HZ, MOTORAPP_IQ_SWEEP_DURATION_S, dt_sweep);
-                ctx->iq_sweep_div_countdown = 0U;
-                ctx->iq_sweep_bias_a = ctx->iq_ref_a;
-                ctx->iq_sweep_a = 0.0f;
+                /* 扫频信号计算频率 */
+#if (MOTORAPP_LOG_SWEEP_DIV > 0U)
+                const float dt_sweep = ((float)MOTORAPP_LOG_SWEEP_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
+#else
+                const float dt_sweep = 1.0f / MOTORAPP_CTRL_HZ;
+#endif
 
-                if (ctx->spd_loop_enabled != 0U)
-                {
-                    ctx->spd_loop_freeze = 1U;
-                    ctx->spd_loop_div_countdown = 0U;
-                }
+                SignalLogSweep_Start(&ctx->iq_sweep, MOTORAPP_LOG_SWEEP_AMP_A, MOTORAPP_LOG_SWEEP_F_START_HZ,
+                                     MOTORAPP_LOG_SWEEP_F_END_HZ, MOTORAPP_LOG_SWEEP_DURATION_S, dt_sweep);
+                ctx->iq_sweep_div_countdown = 0U;
+                ctx->iq_sweep_a = 0.0f;
             }
             else
             {
                 SignalLogSweep_Stop(&ctx->iq_sweep);
                 ctx->iq_sweep_a = 0.0f;
                 ctx->iq_sweep_div_countdown = 0U;
-                ctx->iq_ref_a = ctx->iq_sweep_bias_a;
-                ctx->spd_loop_freeze = 0U;
-                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
-                ctx->spd_loop_div_countdown = 0U;
             }
         }
 
         /* Speed loop (outer): update Iq_ref at lower rate, current loop still runs at 20kHz */
-        if ((ctx->spd_loop_enabled != 0U) && (ctx->spd_loop_freeze == 0U))
+        if (ctx->spd_loop_enabled != 0U)
         {
 #if (MOTORAPP_SPEED_LOOP_DIV > 0U)
             if (ctx->spd_loop_div_countdown == 0U)
@@ -820,6 +812,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 #if (MOTORAPP_SPD_REF_S_CURVE_ENABLE != 0U)
                 omega_ref = SCurveVel_Step(&ctx->spd_ref_plan, omega_ref);
 #else
+                /* 同步实际速度至S-Curve规划器内部状态，确保闭环瞬间速度平滑衔接 */
                 SCurveVel_Reset(&ctx->spd_ref_plan, omega_ref);
 #endif
                 const float omega_meas = ctx->dbg_omega_pll_rad_s;
@@ -849,14 +842,14 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
             SCurveVel_Reset(&ctx->spd_ref_plan, ctx->target_vel_rad_s);
         }
 
-        /* Iq log-sweep injection (for system identification): Iq = bias + sweep */
+        /* Iq log-sweep injection (for system identification): Iq_cmd = Iq_base + sweep */
         if (ctx->iq_sweep.active != 0U)
         {
-#if (MOTORAPP_IQ_SWEEP_DIV > 0U)
+#if (MOTORAPP_LOG_SWEEP_DIV > 0U)
             if (ctx->iq_sweep_div_countdown == 0U)
             {
                 ctx->iq_sweep_a = SignalLogSweep_Step(&ctx->iq_sweep);
-                ctx->iq_sweep_div_countdown = (uint16_t)(MOTORAPP_IQ_SWEEP_DIV - 1U);
+                ctx->iq_sweep_div_countdown = (uint16_t)(MOTORAPP_LOG_SWEEP_DIV - 1U);
             }
             else
             {
@@ -865,34 +858,45 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 #else
             ctx->iq_sweep_a = SignalLogSweep_Step(&ctx->iq_sweep);
 #endif
-
-            float iq = ctx->iq_sweep_bias_a + ctx->iq_sweep_a;
-            if (iq > ctx->i_limit_a)
-            {
-                iq = ctx->i_limit_a;
-            }
-            if (iq < -ctx->i_limit_a)
-            {
-                iq = -ctx->i_limit_a;
-            }
-            ctx->iq_ref_a = iq;
-
-            /* sweep finished by duration */
-            if (ctx->iq_sweep.active == 0U)
-            {
-                ctx->iq_sweep_a = 0.0f;
-                ctx->iq_sweep_div_countdown = 0U;
-                ctx->iq_ref_a = ctx->iq_sweep_bias_a;
-                ctx->spd_loop_freeze = 0U;
-                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
-                ctx->spd_loop_div_countdown = 0U;
-            }
         }
         else
         {
             ctx->iq_sweep_div_countdown = 0U;
             ctx->iq_sweep_a = 0.0f;
         }
+
+        float iq_cmd_a = ctx->iq_ref_a + ctx->iq_sweep_a;
+
+        float iq_comp_a = 0.0f;
+#if (MOTORAPP_IQ_LUT_COMP_ENABLE != 0U)
+        if ((ctx->spd_loop_enabled != 0U) && (ctx->calib_done != 0U))
+        {
+            const float omega_abs = fabsf(ctx->spd_ref_plan.v);
+            if ((omega_abs >= MOTORAPP_IQ_LUT_COMP_MIN_OMEGA_RAD_S) && (omega_abs <= MOTORAPP_IQ_LUT_COMP_MAX_OMEGA_RAD_S))
+            {
+                iq_comp_a = MOTORAPP_IQ_LUT_COMP_GAIN * IqLutComp_SampleRaw21(ctx->raw21);
+                if (iq_comp_a > MOTORAPP_IQ_LUT_COMP_LIMIT_A)
+                {
+                    iq_comp_a = MOTORAPP_IQ_LUT_COMP_LIMIT_A;
+                }
+                else if (iq_comp_a < -MOTORAPP_IQ_LUT_COMP_LIMIT_A)
+                {
+                    iq_comp_a = -MOTORAPP_IQ_LUT_COMP_LIMIT_A;
+                }
+            }
+        }
+#endif
+        ctx->dbg_iq_comp_a = iq_comp_a;
+        iq_cmd_a += iq_comp_a;
+        if (iq_cmd_a > ctx->i_limit_a)
+        {
+            iq_cmd_a = ctx->i_limit_a;
+        }
+        if (iq_cmd_a < -ctx->i_limit_a)
+        {
+            iq_cmd_a = -ctx->i_limit_a;
+        }
+        ctx->dbg_iq_cmd_a = iq_cmd_a;
 
         const float theta_e = MotorApp_ElecAngleRad(ctx);
         float s = 0.0f;
@@ -902,10 +906,10 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         FocCurrentCtrlOut iout = {0};
         float uq_ff_v = 0.0f;
 #if (MOTORAPP_BEMF_FF_ENABLE != 0U)
-        uq_ff_v = MOTORAPP_BEMF_KE_V_PER_RAD_S * ctx->dbg_omega_pll_rad_s;
+        uq_ff_v = MOTORAPP_BEMF_KE_V_PER_RAD_S * ctx->dbg_omega_pll_rad_s; // 反电动势前馈
 #endif
-        FocCurrentCtrl_StepScFf(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, s, c, ctx->id_ref_a, ctx->iq_ref_a, 0.0f,
-                                uq_ff_v, &iout);
+        FocCurrentCtrl_StepScFf(&ctx->i_ctrl, ctx->ia_a, ctx->ib_a, ctx->ic_a, s, c, ctx->id_ref_a, iq_cmd_a, 0.0f, uq_ff_v,
+                                &iout);
 
         ctx->dbg_theta_e = theta_e;
         ctx->dbg_ud = iout.ud_pu;
@@ -989,13 +993,11 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     SCurveVel_Init(&ctx->spd_ref_plan, ((float)MOTORAPP_SPEED_LOOP_DIV) * (1.0f / MOTORAPP_CTRL_HZ),
                    MOTORAPP_SPD_REF_A_MAX_RAD_S2, MOTORAPP_SPD_REF_J_MAX_RAD_S3, MOTORAPP_SPD_REF_K_A);
     SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
-    ctx->spd_loop_freeze = 0U;
 
     SignalLogSweep_Reset(&ctx->iq_sweep);
     ctx->iq_sweep_request = 0U;
     ctx->iq_sweep_request_pending = 0U;
     ctx->iq_sweep_div_countdown = 0U;
-    ctx->iq_sweep_bias_a = 0.0f;
     ctx->iq_sweep_a = 0.0f;
 
     BspUartDma_Init(&ctx->uart, huart);
@@ -1189,8 +1191,24 @@ void MotorApp_Loop(MotorApp *ctx)
 
     if (ctx->stream_page == 6U)
     {
-        /* D6：系统辨识采集：omega_pll / Iq_meas / Iq_ref / sweep_active */
-        JustFloat_Pack4(ctx->dbg_omega_pll_rad_s, ctx->dbg_iq_a, ctx->iq_ref_a, (float)ctx->iq_sweep.active, ctx->tx_frame);
+        /* D6：系统辨识采集：反馈速度 / 交轴反馈电流 / 交轴总给定电流 / 扫频信号标志位 */
+        JustFloat_Pack4(ctx->dbg_omega_pll_rad_s, ctx->dbg_iq_a, ctx->dbg_iq_cmd_a, (float)ctx->iq_sweep.active, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 7U)
+    {
+        /* D7：全周期 LUT 采集：raw21 / omega_pll / Iq_ref / Iq_meas */
+        JustFloat_Pack4((float)ctx->raw21, ctx->dbg_omega_pll_rad_s, ctx->iq_ref_a, ctx->dbg_iq_a, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 8U)
+    {
+        /* D8：补偿观测：omega_pll / Iq_ref / Iq_comp / Iq_cmd */
+        JustFloat_Pack4(ctx->dbg_omega_pll_rad_s, ctx->iq_ref_a, ctx->dbg_iq_comp_a, ctx->dbg_iq_cmd_a, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }
