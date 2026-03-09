@@ -197,3 +197,15 @@ ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_
 - 对数扫频发生器：新增 `Components/signal_log_sweep.h`，HostCmd：`F1` 启动、`F0` 停止；扫频期间会把 `Iq_ref = bias + sweep`（bias 为启动扫频瞬间的 Iq），若当前在速度环模式会临时冻结速度环更新。
 - 观测：新增 `D6` 页输出 `omega_pll / Iq_meas / Iq_ref / sweep_active`（系统辨识采集用）。
 - 可选提高 JustFloat 频率：宏 `MOTORAPP_STREAM_USE_ISR_DIV` + `MOTORAPP_STREAM_DIV`（例如 DIV=10 -> 2kHz，DIV=4 -> 5kHz；串口 2Mbps 下可用，但注意上位机吞吐与丢帧）。
+
+## 2026-03-08：
+给定V<rad/s>进行实验
+  高速:
+    V100 反馈(PLL观测器反馈)峰峰值 4.3；
+    V200 峰峰值 4.38
+    V300 峰峰值 5.19
+    V400 峰峰值 6.31 
+  低速
+    V50 峰峰值 7.97
+    V20 峰峰值 9.92
+    V10 峰峰值 8.25

@@ -1,9 +1,9 @@
- % clc;
+ clc;
  clear; close all;
 
 PI = 3.14159265359;
 
-bandwidth = 150;
+bandwidth = 180;
 
 Wn=2*PI*bandwidth;
 

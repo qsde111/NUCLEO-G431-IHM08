@@ -91,16 +91,16 @@
 #define MOTORAPP_SPEED_LOOP_DIV (20U)
 #endif
 
-#ifndef MOTORAPP_SCTRL_KP
-#define MOTORAPP_SCTRL_KP (0.01f)
+#ifndef MOTORAPP_SPDCTRL_KP
+#define MOTORAPP_SPDCTRL_KP (0.105376f)
 #endif
 
-#ifndef MOTORAPP_SCTRL_KI
-#define MOTORAPP_SCTRL_KI (0.01f)
+#ifndef MOTORAPP_SPDCTRL_KI
+#define MOTORAPP_SPDCTRL_KI (5.296767f)
 #endif
 
 #ifndef MOTORAPP_SCTRL_IQ_LIMIT_A
-#define MOTORAPP_SCTRL_IQ_LIMIT_A (1.0f)
+#define MOTORAPP_SCTRL_IQ_LIMIT_A (1.5f)
 #endif
 
 /* 速度指令给定最小阈值，防止模拟信号波动启动速度环 */
@@ -157,11 +157,11 @@
 #endif
 
 #ifndef MOTORAPP_SPD_PLL_KP
-#define MOTORAPP_SPD_PLL_KP (1155.0f)
+#define MOTORAPP_SPD_PLL_KP (2262.0f)
 #endif
 
 #ifndef MOTORAPP_SPD_PLL_KI
-#define MOTORAPP_SPD_PLL_KI (667185.0f)
+#define MOTORAPP_SPD_PLL_KI (1279101.0f)
 #endif
 
 /* MT835系统带宽寄存器地址 */
@@ -989,7 +989,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->target_vel_rad_s = 0.0f;
     ctx->spd_loop_enabled = 0U;
     ctx->spd_loop_div_countdown = 0U;
-    FocSpeedCtrl_Init(&ctx->spd_ctrl, MOTORAPP_SCTRL_KP, MOTORAPP_SCTRL_KI,
+    FocSpeedCtrl_Init(&ctx->spd_ctrl, MOTORAPP_SPDCTRL_KP, MOTORAPP_SPDCTRL_KI,
                       ((float)MOTORAPP_SPEED_LOOP_DIV) * (1.0f / MOTORAPP_CTRL_HZ), MOTORAPP_SCTRL_IQ_LIMIT_A);
     SCurveVel_Init(&ctx->spd_ref_plan, ((float)MOTORAPP_SPEED_LOOP_DIV) * (1.0f / MOTORAPP_CTRL_HZ),
                    MOTORAPP_SPD_REF_A_MAX_RAD_S2, MOTORAPP_SPD_REF_J_MAX_RAD_S3, MOTORAPP_SPD_REF_K_A);
@@ -1208,8 +1208,8 @@ void MotorApp_Loop(MotorApp *ctx)
 
     if (ctx->stream_page == 8U)
     {
-        /* D8：补偿观测：omega_pll / Iq_ref / Iq_comp / Iq_cmd */
-        JustFloat_Pack4(ctx->dbg_omega_pll_rad_s, ctx->iq_ref_a, ctx->dbg_iq_comp_a, ctx->dbg_iq_cmd_a, ctx->tx_frame);
+        /* D8：补偿观测：iq_a / Iq_ref / iq_sweep_a / Iq_cmd */
+        JustFloat_Pack4(ctx->dbg_iq_a, ctx->iq_ref_a, ctx->iq_sweep_a, ctx->dbg_iq_cmd_a, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }

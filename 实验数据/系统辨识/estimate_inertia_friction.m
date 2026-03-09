@@ -2,13 +2,13 @@
 clear;
 close all;
 % === 1. 读取并提取有效数据 ===
-filename = 'B=150_A=0.2_1HZ-100HZ_D=40s.csv'; % 替换为你的文件名
+filename = 'I_B=0.3_A=0.1_1-50HZ_D=20s.csv'; % 替换为你的文件名
 data = readtable(filename);
 valid_indices = data.iq_sweep_active == 1;
 
 % 提取输入输出信号 (记得去均值，消除稳态直流偏置的影响)
 % 使用 detrend 函数去掉稳态工作点，让系统在 0 附近做纯动态辨识
-omega_out = detrend(data.dbg_omega_pll_rad_s(valid_indices)); 
+omega_out = detrend(data.omega_pll_rad_s(valid_indices)); 
 iq_in     = detrend(data.dbg_iq_a(valid_indices));            
 
 % === 2. 构建辨识数据对象 ===
