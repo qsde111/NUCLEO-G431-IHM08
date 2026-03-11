@@ -2,8 +2,10 @@
 clear;
 close all;
 % === 1. 读取并提取有效数据 ===
-filename = 'I_B=0.3_A=0.1_1-50HZ_D=20s.csv'; % 替换为你的文件名
-data = readtable(filename);
+filename = 'I_B=0.3_A=0.2_1-50HZ_D=40s.csv'; % 替换为你的文件名
+fullpath = 'D:\Workspace\STM32\NUCLEO-G431-IHM08\实验数据\系统辨识\开环\';
+
+data = readtable(fullfile(fullpath, filename));
 valid_indices = data.iq_sweep_active == 1;
 
 % 提取输入输出信号 (记得去均值，消除稳态直流偏置的影响)

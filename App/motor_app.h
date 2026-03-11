@@ -76,6 +76,7 @@ typedef struct
     uint16_t i_w_offset_raw;
     uint8_t i_offset_stage;
     uint8_t i_offset_ready;
+    CurrentSensePair i_pair_active;
     float ia_a;
     float ib_a;
     float ic_a;
@@ -106,6 +107,14 @@ typedef struct
     float dbg_uq_pu;
     float dbg_omega_diff_rad_s;
     float dbg_omega_pll_rad_s;
+    uint8_t dbg_i_pair_active;
+    uint8_t dbg_i_pair_next;
+    uint8_t dbg_i_pair_valid;
+    uint8_t dbg_i_valid_mask;
+    uint8_t dbg_svm_sector;
+    uint16_t dbg_i_low_window_a_ticks;
+    uint16_t dbg_i_low_window_b_ticks;
+    uint16_t dbg_i_low_window_c_ticks;
 
     HostCmd last_host_cmd;
     uint32_t last_host_cmd_tick_ms;

@@ -11,22 +11,27 @@
 #define MT6835_ANGLE_CORR_FULL_SCALE (MT6835_ANGLE_FULL_SCALE)
 #define MT6835_ANGLE_CORR_MASK ((uint32_t)(MT6835_ANGLE_CORR_FULL_SCALE - 1UL))
 
+/* _Static_assert()编译时断言，检查补偿表表是否为 2 的整数次幂 */
+/* 原理：2 的幂二进制形式为 100...0，减 1 后变为 011...1，两者按位与 (&) 结果为 0 */
 _Static_assert((MT6835_ANGLE_LUT_SIZE & (MT6835_ANGLE_LUT_SIZE - 1U)) == 0U, "MT6835 angle LUT size must be power-of-two");
 _Static_assert(MT6835_ANGLE_LUT_SHIFT < 21U, "MT6835 angle LUT shift must be less than 21");
 #endif
 
+/* 编码器原始值校正 */
 uint32_t Mt6835AngleCorr_ApplyRaw21(uint32_t raw21)
 {
 #if (MT6835_ANGLE_CORR_ENABLE != 0U)
-    const uint32_t raw = raw21 & MT6835_ANGLE_CORR_MASK;
-    const uint32_t idx = raw >> MT6835_ANGLE_CORR_SHIFT;
+    const uint32_t raw = raw21 & MT6835_ANGLE_CORR_MASK; // 数据清洗(防呆)，取低21位数据
+    const uint32_t idx = raw >> MT6835_ANGLE_CORR_SHIFT; // 算对补偿表的索引部分(右移 11 位，等同于除以 2048)
+
+    /* 索引甚于取低 11 位做后续插补的小数部分 */
     const uint32_t frac_mask = (1UL << MT6835_ANGLE_CORR_SHIFT) - 1UL;
     const uint32_t frac = raw & frac_mask;
 
-    const uint32_t y0 = MT6835_ANGLE_CORR_LUT_PTR[idx];
-    const uint32_t y1 = MT6835_ANGLE_CORR_LUT_PTR[idx + 1U];
-    const uint32_t corr = y0 + (uint32_t)(((uint64_t)(y1 - y0) * (uint64_t)frac) >> MT6835_ANGLE_CORR_SHIFT);
-    return corr & MT6835_ANGLE_CORR_MASK;
+    const uint32_t y0 = MT6835_ANGLE_CORR_LUT_PTR[idx];      // 获取补偿表对应数据区间起点
+    const uint32_t y1 = MT6835_ANGLE_CORR_LUT_PTR[idx + 1U]; // 获取补偿表对应数据区间终点
+    const uint32_t corr = y0 + (uint32_t)(((uint64_t)(y1 - y0) * (uint64_t)frac) >> MT6835_ANGLE_CORR_SHIFT); // 线性插补
+    return corr & MT6835_ANGLE_CORR_MASK; // 防御性编程 + 圆周过零处理
 #else
     return raw21 & 0x1FFFFFU;
 #endif

@@ -29,7 +29,7 @@ if method == 1
     Kp = (J * omega_bw) / Kt;
     
     % 计算 Ki (拐点频率选带宽的 1/5)
-    omega_pi = omega_bw / 5; 
+    omega_pi = omega_bw / 10; 
     Ki = Kp * omega_pi;
     
     fprintf('【一阶带宽法】(带宽: %d Hz)\n', bw_hz);

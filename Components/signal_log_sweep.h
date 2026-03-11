@@ -21,6 +21,7 @@ typedef struct
     uint8_t done;
 } SignalLogSweep;
 
+/* 清零扫频信号状态机 */
 static inline void SignalLogSweep_Reset(SignalLogSweep *ctx)
 {
     if (ctx == 0)
@@ -57,6 +58,10 @@ static inline void SignalLogSweep_Start(SignalLogSweep *ctx, float amp, float f_
     const float steps = duration_s / dt_s;
     if (steps > 0.0f)
     {
+        /* logf(x)：计算 x 的自然对数 ln(x) */
+        /* expf(x): 计算 e 的 x 次方 */
+        /* 计算每一步需要乘以的频率系数（即对总倍率 r 开 steps 次方根） */
+        /* 原理：r^(1/steps) = exp(ln(r) / steps) */
         ctx->f_ratio_per_step = expf(logf(r) / steps);
     }
     else
@@ -105,7 +110,7 @@ static inline float SignalLogSweep_Step(SignalLogSweep *ctx)
         ctx->phase_rad += two_pi;
     }
 
-    ctx->f_hz *= ctx->f_ratio_per_step;
+    ctx->f_hz *= ctx->f_ratio_per_step; // 对数扫频-频率随时间呈等比数列增长
     ctx->t_s += ctx->dt_s;
 
     return y;

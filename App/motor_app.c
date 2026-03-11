@@ -39,6 +39,10 @@
 #define MOTORAPP_CURRENT_AMP_GAIN (5.18f)
 #endif
 
+#ifndef MOTORAPP_CURRENT_MIN_WINDOW_TICKS
+#define MOTORAPP_CURRENT_MIN_WINDOW_TICKS (450U)
+#endif
+
 #ifndef MOTORAPP_CURRENT_OFFSET_SAMPLES
 #define MOTORAPP_CURRENT_OFFSET_SAMPLES (1000U)
 #endif
@@ -96,11 +100,19 @@
 #endif
 
 #ifndef MOTORAPP_SPDCTRL_KI
-#define MOTORAPP_SPDCTRL_KI (5.296767f)
+#define MOTORAPP_SPDCTRL_KI (6.620959f)
 #endif
 
+// #ifndef MOTORAPP_SPDCTRL_KP
+// #define MOTORAPP_SPDCTRL_KP (0.105376f)
+// #endif
+
+// #ifndef MOTORAPP_SPDCTRL_KI
+// #define MOTORAPP_SPDCTRL_KI (5.296767f)
+// #endif
+
 #ifndef MOTORAPP_SCTRL_IQ_LIMIT_A
-#define MOTORAPP_SCTRL_IQ_LIMIT_A (1.5f)
+#define MOTORAPP_SCTRL_IQ_LIMIT_A (2.0f)
 #endif
 
 /* 速度指令给定最小阈值，防止模拟信号波动启动速度环 */
@@ -157,11 +169,11 @@
 #endif
 
 #ifndef MOTORAPP_SPD_PLL_KP
-#define MOTORAPP_SPD_PLL_KP (2262.0f)
+#define MOTORAPP_SPD_PLL_KP (1005.0f)
 #endif
 
 #ifndef MOTORAPP_SPD_PLL_KI
-#define MOTORAPP_SPD_PLL_KI (1279101.0f)
+#define MOTORAPP_SPD_PLL_KI (252662.0f)
 #endif
 
 /* MT835系统带宽寄存器地址 */
@@ -278,6 +290,49 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
 }
 
 /* 通过给定ud uq计算三路pwm占空比并改变对应CCR值 */
+static void MotorApp_MapCurrentPairChannels(CurrentSensePair pair, uint32_t *adc1_ch, uint32_t *adc2_ch)
+{
+    if ((adc1_ch == 0) || (adc2_ch == 0))
+    {
+        return;
+    }
+
+    switch (pair)
+    {
+    case CURRENT_SENSE_PAIR_AB:
+        *adc1_ch = LL_ADC_CHANNEL_1;
+        *adc2_ch = LL_ADC_CHANNEL_7;
+        break;
+    case CURRENT_SENSE_PAIR_AC:
+        *adc1_ch = LL_ADC_CHANNEL_1;
+        *adc2_ch = LL_ADC_CHANNEL_6;
+        break;
+    case CURRENT_SENSE_PAIR_BC:
+        *adc1_ch = LL_ADC_CHANNEL_7;
+        *adc2_ch = LL_ADC_CHANNEL_6;
+        break;
+    default:
+        *adc1_ch = LL_ADC_CHANNEL_1;
+        *adc2_ch = LL_ADC_CHANNEL_7;
+        break;
+    }
+}
+
+static void MotorApp_ProgramCurrentPair(MotorApp *ctx, CurrentSensePair pair)
+{
+    uint32_t adc1_ch = 0U;
+    uint32_t adc2_ch = 0U;
+
+    if (ctx == 0)
+    {
+        return;
+    }
+
+    MotorApp_MapCurrentPairChannels(pair, &adc1_ch, &adc2_ch);
+    BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, adc1_ch, adc2_ch);
+    ctx->i_pair_active = pair;
+}
+
 static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_theta_e, float cos_theta_e)
 {
     if (ctx == 0)
@@ -290,11 +345,22 @@ static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_th
     const float u_beta = (ud * sin_theta_e) + (uq * cos_theta_e);
 
     SvpwmOut out = {0};
+    CurrentSense3ShuntDecision current_decision = {0};
     Svpwm_Calc(u_alpha, u_beta, &out);
     ctx->dbg_duty_a = out.duty_a;
     ctx->dbg_duty_b = out.duty_b;
     ctx->dbg_duty_c = out.duty_c;
+    CurrentSense3Shunt_SelectPair(out.duty_a, out.duty_b, out.duty_c, ctx->pwm.period, MOTORAPP_CURRENT_MIN_WINDOW_TICKS,
+                                  ctx->i_pair_active, &current_decision);
+    ctx->dbg_svm_sector = out.sector;
+    ctx->dbg_i_pair_next = (uint8_t)current_decision.pair;
+    ctx->dbg_i_pair_valid = current_decision.pair_valid;
+    ctx->dbg_i_valid_mask = current_decision.valid_mask;
+    ctx->dbg_i_low_window_a_ticks = current_decision.low_window_a_ticks;
+    ctx->dbg_i_low_window_b_ticks = current_decision.low_window_b_ticks;
+    ctx->dbg_i_low_window_c_ticks = current_decision.low_window_c_ticks;
     BspTim1Pwm_SetDuty(&ctx->pwm, out.duty_a, out.duty_b, out.duty_c);
+    MotorApp_ProgramCurrentPair(ctx, current_decision.pair);
 }
 
 static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
@@ -589,6 +655,7 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 {
     MotorApp *ctx = (MotorApp *)user;
+    const CurrentSensePair sampled_pair = (ctx != 0) ? ctx->i_pair_active : CURRENT_SENSE_PAIR_AB;
     if (ctx == 0)
     {
         return;
@@ -603,7 +670,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* 心跳监控（Telemetry / Profiling）变量 */
     ctx->adc_isr_count++;
 
-    /* 打印分频 */
+    /* 打印分频计数器 */
 #if (MOTORAPP_STREAM_USE_ISR_DIV != 0U)
 #if (MOTORAPP_STREAM_DIV > 0U)
     if (ctx->stream_div_countdown == 0U)
@@ -690,8 +757,8 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
                 ctx->i_offset_stage = 1U;
                 CurrentSenseOffset2_Init(&ctx->i_ab_offset, MOTORAPP_CURRENT_OFFSET_SAMPLES);
-                /* Sample U+W to calibrate W offset too (future dynamic 2-shunt sampling support) */
-                BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, LL_ADC_CHANNEL_1, LL_ADC_CHANNEL_6);
+                /* Sample A+C to calibrate C offset. */
+                MotorApp_ProgramCurrentPair(ctx, CURRENT_SENSE_PAIR_AC);
             }
             else if (ctx->i_offset_stage == 1U)
             {
@@ -699,8 +766,8 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 
                 ctx->i_offset_stage = 2U;
                 ctx->i_offset_ready = 1U;
-                /* Back to default U+V sampling */
-                BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, LL_ADC_CHANNEL_1, LL_ADC_CHANNEL_7);
+                /* Back to default A+B sampling before dynamic selection takes over. */
+                MotorApp_ProgramCurrentPair(ctx, CURRENT_SENSE_PAIR_AB);
             }
         }
     }
@@ -708,14 +775,19 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* 原始数据转实际物理电流（安培） */
     if (ctx->i_offset_ready != 0U)
     {
-        ctx->ia_a = -CurrentSense_RawToCurrentA(adc1, ctx->i_u_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
-                                                MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
-        ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
-                                                MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN);
-        ctx->ic_a = -(ctx->ia_a + ctx->ib_a);
+        const uint16_t offset_raw[CURRENT_SENSE_PHASE_COUNT] = {
+            ctx->i_u_offset_raw,
+            ctx->i_v_offset_raw,
+            ctx->i_w_offset_raw,
+        };
+        ctx->dbg_i_pair_active = (uint8_t)sampled_pair;
+        CurrentSense3Shunt_Reconstruct(sampled_pair, adc1, adc2, offset_raw, MOTORAPP_ADC_MAX_COUNTS, MOTORAPP_ADC_VREF_V,
+                                       MOTORAPP_CURRENT_SHUNT_OHM, MOTORAPP_CURRENT_AMP_GAIN, -1.0f, &ctx->ia_a, &ctx->ib_a,
+                                       &ctx->ic_a);
     }
     else
     {
+        ctx->dbg_i_pair_active = (uint8_t)sampled_pair;
         ctx->ia_a = 0.0f;
         ctx->ib_a = 0.0f;
         ctx->ic_a = 0.0f;
@@ -967,6 +1039,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->i_u_offset_raw = 0U;
     ctx->i_v_offset_raw = 0U;
     ctx->i_w_offset_raw = 0U;
+    ctx->i_pair_active = CURRENT_SENSE_PAIR_AB;
 
     ctx->vbus_raw = 0U;
     ctx->vbus_v = MOTORAPP_VBUS_V;
@@ -1010,7 +1083,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
 
     BspAdcInjPair_Init(&ctx->adc_inj, hadc1, hadc2);
     BspAdcInjPair_RegisterCallback(&ctx->adc_inj, ctx, MotorApp_OnAdcPair);
-    BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, LL_ADC_CHANNEL_1, LL_ADC_CHANNEL_7);
+    MotorApp_ProgramCurrentPair(ctx, CURRENT_SENSE_PAIR_AB);
     (void)BspAdcInjPair_Start(&ctx->adc_inj);
 
     BspSpi3Fast_Init(&ctx->spi, hspi, cs_port, cs_pin);
@@ -1028,7 +1101,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     /* 磁极校准参数配置台 */
     MotorCalibParams calib = {
         .pole_pairs = 7.0f,                                 // 极对数
-        .ud_align = 0.1f,                                   // 对齐阶段d轴电压
+        .ud_align = 0.09f,                                  // 对齐阶段d轴电压
         .uq_spin = 0.07f,                                   // 开环拖动阶段q轴电压
         .omega_e_rad_s = 31.4159265f,                       /* 开环拖动时的电角速度 2*pi*5Hz */
         .align_ticks = (uint32_t)(MOTORAPP_CTRL_HZ * 0.5f), // 对齐阶段保持时间
@@ -1210,6 +1283,22 @@ void MotorApp_Loop(MotorApp *ctx)
     {
         /* D8：补偿观测：iq_a / Iq_ref / iq_sweep_a / Iq_cmd */
         JustFloat_Pack4(ctx->dbg_iq_a, ctx->iq_ref_a, ctx->iq_sweep_a, ctx->dbg_iq_cmd_a, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 9U)
+    {
+        JustFloat_Pack4((float)ctx->dbg_i_low_window_a_ticks, (float)ctx->dbg_i_low_window_b_ticks,
+                        (float)ctx->dbg_i_low_window_c_ticks, (float)ctx->dbg_i_valid_mask, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 10U)
+    {
+        JustFloat_Pack4((float)ctx->dbg_i_pair_active, (float)ctx->dbg_i_pair_next, (float)ctx->dbg_i_pair_valid,
+                        (float)ctx->dbg_svm_sector, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }

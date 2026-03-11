@@ -3,7 +3,7 @@
 
 PI = 3.14159265359;
 
-bandwidth = 180;
+bandwidth = 80;
 
 Wn=2*PI*bandwidth;
 
