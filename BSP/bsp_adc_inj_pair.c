@@ -69,6 +69,7 @@ HAL_StatusTypeDef BspAdcInjPair_Start(BspAdcInjPair *ctx)
     return HAL_OK;
 }
 
+/* 修改 ADC 的注入序列寄存器 (JSQR) */
 void BspAdcInjPair_SetRank1Channels(BspAdcInjPair *ctx, uint32_t adc1_ch, uint32_t adc2_ch)
 {
     if ((ctx == 0) || (ctx->hadc1 == 0) || (ctx->hadc2 == 0) || (ctx->hadc1->Instance == 0) || (ctx->hadc2->Instance == 0))

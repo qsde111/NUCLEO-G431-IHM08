@@ -218,3 +218,44 @@ ctx->ib_a = -CurrentSense_RawToCurrentA(adc2, ctx->i_v_offset_raw, MOTORAPP_ADC_
 - 因此在速度环闭环模式下，`iq_sweep` 与速度 PI 输出 `iq_ref` 会共同作用到电流环，速度环会对低频扰动产生抵消作用。
 - `实验数据/系统辨识/速度环闭环/` 下的 D6 数据应按“闭环扰动响应/抗扰观测”理解，不能再直接按纯机械开环 `omega / Iq` 一阶模型去解释 `J/B`。
 - 若目标是辨识机械对象参数，实验应使用 `实验数据/系统辨识/开环/` 下这种“仅开电流环、用固定 `Iq` bias + F1 扫频”的方式，或在实验代码中显式冻结速度环更新。
+
+
+## 2026-03-12：三电阻低边采样动态选相
+
+- current_sense.h (line 87) 新增了三电阻动态选相和三相重构：按 low_window = (1 - duty) * ARR 算每相低边有效窗口，优先选“最小窗口更大”的那一对，相等时尽量保持当前 pair，核心入口在 current_sense.h 和 current_sense.h。
+- motor_app.c (line 293) 加了逻辑 pair 到 ADC 通道的映射，motor_app.c (line 658) 开始的 ISR 现在先锁存本拍 sampled_pair，用它解释当前 raw，再在 SVPWM 输出后为下一拍下发新 pair，避免了 offset 校准切换点把本拍 raw 解释错。调试量和页也补了，在 motor_app.h 和 motor_app.c：D9 = winA, winB, winC, valid_mask，D10 = pair_active, pair_next, pair_valid, sector，其中 pair 编码是 0=AB, 1=AC, 2=BC
+```text
+PWM(k) 触发ADC      -> 采到的是上一次已经写好的 pair_active
+ISR(k) 入口         -> sampled_pair = pair_active
+ISR(k) 前半段       -> 用 sampled_pair + raw 重构 ia/ib/ic
+ISR(k) 中段         -> 跑电流环 / SVPWM，得到新的 duty_a/b/c
+ISR(k) 尾部         -> 根据新 duty 选出 pair_next
+ISR(k) 尾部         -> 写 ADC injected Rank1 通道 = pair_next
+PWM(k+1) 触发ADC    -> 真正采到 pair_next
+ISR(k+1)            -> 再把它当 sampled_pair 解释
+```
+
+## 2026-03-13：指令M2后，第一至四通道分别返回：85、10、5、4
+
+## 2026-03-14：
+TCOMP_SCALE=1:
+  V500：XL4015恒流模块显示0.17A
+  V700：XL4015恒流模块显示0.22A
+TCOMP_SCALE=0.9:
+  V500：0.16A
+  V700：0.21A
+  V1000：0.27A，电机、MCU发热不明显
+TCOMP_SCALE=0.0:
+  V500：0.16A
+  V700：0.21A
+TCOMP_SCALE=1.1:
+  V500：0.15A
+  V700：0.21A
+TCOMP_SCALE=0.75:
+  V500：0.15A
+  V700：0.20A
+
+万转实验：
+  V1000：XL4015恒流模块显示0.27A，电机、MCU发热不明显
+  V1200：0.33A
+  V1400：0.38A

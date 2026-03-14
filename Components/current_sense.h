@@ -71,6 +71,7 @@ static inline uint16_t CurrentSenseOffset2_OffsetB(const CurrentSenseOffset2 *ct
     return (ctx != 0) ? ctx->offset_b : 0U;
 }
 
+/* 原始数据转实际物理电流(安培) */
 static inline float CurrentSense_RawToCurrentA(uint16_t raw, uint16_t offset_raw, float adc_max_counts, float vref_v,
                                                float shunt_ohm, float gain_v_per_v)
 {
@@ -131,6 +132,7 @@ static inline float CurrentSense_Clamp01(float x)
     return x;
 }
 
+/* (1.0f - duty)*ARR 算出该相下桥臂导通时间(留给ADC采样的时间窗口大小) */
 static inline uint16_t CurrentSense_LowWindowTicks(float duty, uint32_t pwm_period_ticks)
 {
     const float low_ticks = (1.0f - CurrentSense_Clamp01(duty)) * (float)pwm_period_ticks;
@@ -163,6 +165,7 @@ static inline uint8_t CurrentSense_CountValidBits3(uint8_t valid_mask)
     return count;
 }
 
+/* 从 pair 采样组中选出采样的第一相 */
 static inline CurrentSensePhase CurrentSense_PairPhase1(CurrentSensePair pair)
 {
     switch (pair)
@@ -177,6 +180,7 @@ static inline CurrentSensePhase CurrentSense_PairPhase1(CurrentSensePair pair)
     }
 }
 
+/* 从 pair 采样组中选出采样的第二相 */
 static inline CurrentSensePhase CurrentSense_PairPhase2(CurrentSensePair pair)
 {
     switch (pair)
@@ -201,10 +205,13 @@ static inline uint8_t CurrentSense_PhaseMask(CurrentSensePhase phase)
     return (uint8_t)(1U << (uint32_t)phase);
 }
 
+/* 利用最新的占空比，推算下一轮ADC采样通道组合，丢入 CurrentSense3ShuntDecision *out 缓冲区 */
 static inline void CurrentSense3Shunt_SelectPair(float duty_a, float duty_b, float duty_c, uint32_t pwm_period_ticks,
                                                  uint16_t min_window_ticks, CurrentSensePair preferred_pair,
                                                  CurrentSense3ShuntDecision *out)
 {
+    /* 遍历测试的优先级顺序（先测AB，再测AC，最后测BC） */
+    /* pair_order[3] = {0, 1, 2}; */
     static const CurrentSensePair pair_order[CURRENT_SENSE_PAIR_COUNT] = {
         CURRENT_SENSE_PAIR_AB,
         CURRENT_SENSE_PAIR_AC,
@@ -216,12 +223,15 @@ static inline void CurrentSense3Shunt_SelectPair(float duty_a, float duty_b, flo
         return;
     }
 
+    /* 计算三相下桥臂导通时间(三相ADC采样窗口) */
+    /* windows[3] = {... } */
     const uint16_t windows[CURRENT_SENSE_PHASE_COUNT] = {
         CurrentSense_LowWindowTicks(duty_a, pwm_period_ticks),
         CurrentSense_LowWindowTicks(duty_b, pwm_period_ticks),
         CurrentSense_LowWindowTicks(duty_c, pwm_period_ticks),
     };
 
+    /* 用掩码 valid_mask 标记采样窗口大于 min_window_ticks 的相 */
     uint8_t valid_mask = 0U;
     if (windows[CURRENT_SENSE_PHASE_A] >= min_window_ticks)
     {
@@ -247,25 +257,44 @@ static inline void CurrentSense3Shunt_SelectPair(float duty_a, float duty_b, flo
     for (uint32_t i = 0U; i < (uint32_t)CURRENT_SENSE_PAIR_COUNT; ++i)
     {
         const CurrentSensePair pair = pair_order[i];
+
+        /* 选出两相采样通道 */
         const CurrentSensePhase p1 = CurrentSense_PairPhase1(pair);
         const CurrentSensePhase p2 = CurrentSense_PairPhase2(pair);
+
+        /* 拿到采样时间 */
         const uint16_t w1 = windows[p1];
         const uint16_t w2 = windows[p2];
-        const uint8_t pair_valid = (uint8_t)(((CurrentSense_PhaseMask(p1) & valid_mask) != 0U) &&
-                                             ((CurrentSense_PhaseMask(p2) & valid_mask) != 0U));
 
+        /* 检查两相ADC采样窗口大于 min_window_ticks，1: 两相均有效；0: 至少有一相无效 */
+        const uint8_t pair_valid =
+            (uint8_t)(((CurrentSense_PhaseMask(p1) & valid_mask) != 0U) && ((CurrentSense_PhaseMask(p2) & valid_mask) != 0U));
+
+        /* valid_count >= 2U：全局来看，三相里至少有两相是及格的 */
+        /* pair_valid == 0U：当前正在被考察的这对组合存在某相不及格 */
+        /* 直接 continue 跳过本对采样组合，去看下一组 */
         if ((valid_count >= 2U) && (pair_valid == 0U))
         {
             continue;
         }
 
+        /* 选两相中ADC采样窗口较短的 */
         const uint16_t primary = (w1 < w2) ? w1 : w2;
-        const uint16_t secondary = (uint16_t)(w1 + w2);
-        const uint8_t better = (uint8_t)((have_best == 0U) || (primary > best_primary) ||
-                                         ((primary == best_primary) && (secondary > best_secondary)) ||
-                                         ((primary == best_primary) && (secondary == best_secondary) &&
-                                          (pair == preferred_pair) && (best_pair != preferred_pair)));
 
+        /* 两相总采样窗口 */
+        const uint16_t secondary = (uint16_t)(w1 + w2);
+
+        const uint8_t better =
+            (uint8_t)((have_best == 0U)                                              // for循环第一圈，pair 自动成为 best_pair
+                      || (primary > best_primary)                                    // 比较最短采样窗口
+                      || ((primary == best_primary) && (secondary > best_secondary)) // 最短采样窗口相等，比较总采样窗口
+
+                      /* 最短采样窗口，总采样窗口都相等，迟滞思想：条件一样，优先保持上一轮选定的组合不变 */
+                      /* 当前 pair 是上轮采样用的 preferred_pair，当前 best_pair 不是 preferred_pair */
+                      || ((primary == best_primary) && (secondary == best_secondary) && (pair == preferred_pair) &&
+                          (best_pair != preferred_pair)));
+
+        /* 当前组合 pair 是否比记录的最好组合 best_pair 更好 */
         if (better != 0U)
         {
             have_best = 1U;
@@ -291,10 +320,11 @@ static inline float CurrentSense_RawToSignedCurrentA(uint16_t raw, uint16_t offs
     return sign * CurrentSense_RawToCurrentA(raw, offset_raw, adc_max_counts, vref_v, shunt_ohm, gain_v_per_v);
 }
 
+/* 对应传入的 pair 组算三相电流 */
 static inline void CurrentSense3Shunt_Reconstruct(CurrentSensePair pair, uint16_t adc1_raw, uint16_t adc2_raw,
-                                                  const uint16_t offset_raw[CURRENT_SENSE_PHASE_COUNT],
-                                                  float adc_max_counts, float vref_v, float shunt_ohm, float gain_v_per_v,
-                                                  float sign, float *ia_a, float *ib_a, float *ic_a)
+                                                  const uint16_t offset_raw[CURRENT_SENSE_PHASE_COUNT], float adc_max_counts,
+                                                  float vref_v, float shunt_ohm, float gain_v_per_v, float sign, float *ia_a,
+                                                  float *ib_a, float *ic_a)
 {
     if ((offset_raw == 0) || (ia_a == 0) || (ib_a == 0) || (ic_a == 0))
     {
@@ -304,24 +334,24 @@ static inline void CurrentSense3Shunt_Reconstruct(CurrentSensePair pair, uint16_
     switch (pair)
     {
     case CURRENT_SENSE_PAIR_AB:
-        *ia_a = CurrentSense_RawToSignedCurrentA(adc1_raw, offset_raw[CURRENT_SENSE_PHASE_A], adc_max_counts, vref_v,
-                                                 shunt_ohm, gain_v_per_v, sign);
-        *ib_a = CurrentSense_RawToSignedCurrentA(adc2_raw, offset_raw[CURRENT_SENSE_PHASE_B], adc_max_counts, vref_v,
-                                                 shunt_ohm, gain_v_per_v, sign);
+        *ia_a = CurrentSense_RawToSignedCurrentA(adc1_raw, offset_raw[CURRENT_SENSE_PHASE_A], adc_max_counts, vref_v, shunt_ohm,
+                                                 gain_v_per_v, sign);
+        *ib_a = CurrentSense_RawToSignedCurrentA(adc2_raw, offset_raw[CURRENT_SENSE_PHASE_B], adc_max_counts, vref_v, shunt_ohm,
+                                                 gain_v_per_v, sign);
         *ic_a = -(*ia_a + *ib_a);
         break;
     case CURRENT_SENSE_PAIR_AC:
-        *ia_a = CurrentSense_RawToSignedCurrentA(adc1_raw, offset_raw[CURRENT_SENSE_PHASE_A], adc_max_counts, vref_v,
-                                                 shunt_ohm, gain_v_per_v, sign);
-        *ic_a = CurrentSense_RawToSignedCurrentA(adc2_raw, offset_raw[CURRENT_SENSE_PHASE_C], adc_max_counts, vref_v,
-                                                 shunt_ohm, gain_v_per_v, sign);
+        *ia_a = CurrentSense_RawToSignedCurrentA(adc1_raw, offset_raw[CURRENT_SENSE_PHASE_A], adc_max_counts, vref_v, shunt_ohm,
+                                                 gain_v_per_v, sign);
+        *ic_a = CurrentSense_RawToSignedCurrentA(adc2_raw, offset_raw[CURRENT_SENSE_PHASE_C], adc_max_counts, vref_v, shunt_ohm,
+                                                 gain_v_per_v, sign);
         *ib_a = -(*ia_a + *ic_a);
         break;
     case CURRENT_SENSE_PAIR_BC:
-        *ib_a = CurrentSense_RawToSignedCurrentA(adc1_raw, offset_raw[CURRENT_SENSE_PHASE_B], adc_max_counts, vref_v,
-                                                 shunt_ohm, gain_v_per_v, sign);
-        *ic_a = CurrentSense_RawToSignedCurrentA(adc2_raw, offset_raw[CURRENT_SENSE_PHASE_C], adc_max_counts, vref_v,
-                                                 shunt_ohm, gain_v_per_v, sign);
+        *ib_a = CurrentSense_RawToSignedCurrentA(adc1_raw, offset_raw[CURRENT_SENSE_PHASE_B], adc_max_counts, vref_v, shunt_ohm,
+                                                 gain_v_per_v, sign);
+        *ic_a = CurrentSense_RawToSignedCurrentA(adc2_raw, offset_raw[CURRENT_SENSE_PHASE_C], adc_max_counts, vref_v, shunt_ohm,
+                                                 gain_v_per_v, sign);
         *ia_a = -(*ib_a + *ic_a);
         break;
     default:

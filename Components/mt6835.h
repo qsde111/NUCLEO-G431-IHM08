@@ -24,6 +24,7 @@ void Mt6835_Init(Mt6835 *ctx, const Mt6835BusOps *bus);
 uint32_t Mt6835_ReadRaw21(Mt6835 *ctx);
 uint8_t Mt6835_ReadReg8(Mt6835 *ctx, uint16_t reg, uint8_t *val_out);
 uint8_t Mt6835_WriteReg8(Mt6835 *ctx, uint16_t reg, uint8_t val);
+uint8_t Mt6835_BurnEeprom(Mt6835 *ctx, uint8_t *ack_out);
 float Mt6835_Raw21ToRad(uint32_t raw21);
 float Mt6835_Raw21ToDeg(uint32_t raw21);
 

@@ -24,6 +24,8 @@
  *   - `D5`：omega_ref / omega_pll / Iq_ref / Iq_meas
  *   - `D7`：raw21 / omega_pll / Iq_ref / Iq_meas（用于按角度做全周期 LUT 分析）
  *   - `D8`：omega_pll / Iq_ref / Iq_comp / Iq_cmd（补偿观测）
+ *   - `D11`：theta_e_meas / theta_e_ctrl / delta_theta_deg / u_mag_pu
+ *   - `D12`：ud_pu / uq_pu / u_mag_pu / delta_theta_deg
  */
 
 #include "bsp_adc_inj_pair.h"
@@ -59,8 +61,10 @@ typedef struct
     volatile uint16_t stream_pending;
     uint16_t stream_div_countdown;
     uint32_t raw21;      /* raw MT6835 count for logging / offline calibration */
-    uint32_t raw21_corr; /* corrected MT6835 count for control */
-    float pos_mech_rad;
+    uint32_t raw21_corr; /* corrected MT6835 count after static LUT correction */
+    float pos_mech_rad;  /* measured mechanical angle, used by speed/calibration/logging */
+    float theta_e_meas_rad;
+    float theta_e_ctrl_rad;
     uint16_t enc_div_countdown;
     uint8_t enc_dma_enable; // 主循环读写MT6835寄存器时关闭ISR中断读取编码器，0=禁止
 
@@ -76,7 +80,7 @@ typedef struct
     uint16_t i_w_offset_raw;
     uint8_t i_offset_stage;
     uint8_t i_offset_ready;
-    CurrentSensePair i_pair_active;
+    CurrentSensePair i_pair_active; // 当前采样通道组合
     float ia_a;
     float ib_a;
     float ic_a;
@@ -94,6 +98,9 @@ typedef struct
     uint32_t adc_isr_count;
     uint8_t dbg_calib_state;
     float dbg_theta_e;
+    float dbg_theta_e_meas;
+    float dbg_theta_e_ctrl;
+    float dbg_theta_e_delta_deg;
     float dbg_ud;
     float dbg_uq;
     float dbg_duty_a;
@@ -105,6 +112,7 @@ typedef struct
     float dbg_iq_comp_a;
     float dbg_ud_pu;
     float dbg_uq_pu;
+    float dbg_u_mag_pu;
     float dbg_omega_diff_rad_s;
     float dbg_omega_pll_rad_s;
     uint8_t dbg_i_pair_active;

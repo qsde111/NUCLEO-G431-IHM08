@@ -105,7 +105,7 @@ HAL_StatusTypeDef BspTim1Pwm_DisableOutputs(BspTim1Pwm *ctx)
     return HAL_OK;
 }
 
-/* 通过三相占空比修改三相CCR值并输出 */
+/* 将占空比更新到定时器的 CCR 寄存器，下周期生效 */
 void BspTim1Pwm_SetDuty(BspTim1Pwm *ctx, float duty_a, float duty_b, float duty_c)
 {
     if ((ctx == 0) || (ctx->htim == 0) || (ctx->period == 0U))

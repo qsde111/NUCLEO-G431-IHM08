@@ -63,7 +63,7 @@ static inline float SCurveVel_Step(SCurveVel *ctx, float v_tgt)
     a_des = SCurveVel_Clamp(a_des, -ctx->a_max, ctx->a_max); // 钳位期望加速度
 
     const float da_max = ctx->j_max * ctx->dt_s;                       // 一个控制周期内加速度最大变化量
-    const float da = SCurveVel_Clamp(a_des - ctx->a, -da_max, da_max); // 计算+钳位加速度增量
+    const float da = SCurveVel_Clamp(a_des - ctx->a, -da_max, da_max); // 计算、钳位加速度增量
     ctx->a = SCurveVel_Clamp(ctx->a + da, -ctx->a_max, ctx->a_max);    // 更新加速度
     ctx->v += ctx->a * ctx->dt_s;                                      // 加速度积分得到输出平滑速度
 

@@ -84,6 +84,28 @@ uint8_t Mt6835_WriteReg8(Mt6835 *ctx, uint16_t reg, uint8_t val)
     return 1U;
 }
 
+/* EEPROM burn command: 0xC0, 0x00, then one dummy byte to read ACK(0x55). */
+uint8_t Mt6835_BurnEeprom(Mt6835 *ctx, uint8_t *ack_out)
+{
+    if ((ctx == 0) || (ctx->bus.transfer8 == 0) || (ctx->bus.cs_low == 0) || (ctx->bus.cs_high == 0))
+    {
+        return 0U;
+    }
+
+    ctx->bus.cs_low(ctx->bus.user);
+    (void)ctx->bus.transfer8(ctx->bus.user, 0xC0U);
+    (void)ctx->bus.transfer8(ctx->bus.user, 0x00U);
+    const uint8_t ack = ctx->bus.transfer8(ctx->bus.user, 0x00U);
+    ctx->bus.cs_high(ctx->bus.user);
+
+    if (ack_out != 0)
+    {
+        *ack_out = ack;
+    }
+
+    return (ack == 0x55U) ? 1U : 0U;
+}
+
 /* 编码器读取数值转换为机械角度 */
 float Mt6835_Raw21ToRad(uint32_t raw21)
 {

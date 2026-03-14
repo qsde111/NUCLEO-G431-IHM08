@@ -7,7 +7,7 @@
 typedef struct
 {
     TIM_HandleTypeDef *htim;
-    uint32_t period;
+    uint32_t period; // ARR-自动重装载寄存器
     uint8_t outputs_enabled;
 } BspTim1Pwm;
 

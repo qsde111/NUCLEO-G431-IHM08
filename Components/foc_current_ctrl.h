@@ -9,7 +9,7 @@ typedef struct
     float kp;         /* V/A */
     float ki;         /* V/(A*s) */
     float dt_s;       /* control period */
-    float vbus_v;     /* DC bus voltage */
+    float vbus_v;     /* DC bus voltage VBUS_V/sqrt(3)*/
     float v_limit_pu; /* modulation limit in per-unit of vbus (e.g. 1/sqrt(3) for SVPWM linear region) */
 
     float id_int_v;
@@ -124,6 +124,7 @@ static inline void FocCurrentCtrl_StepScFf(FocCurrentCtrl *ctx, float ia_a, floa
     out->uq_v = uq_v;
 
     /* 占空比生成的归一化 */
+    /* pu-Per Unit 标幺值 */
     out->ud_pu = ud_v / ctx->vbus_v;
     out->uq_pu = uq_v / ctx->vbus_v;
 }

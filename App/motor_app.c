@@ -40,7 +40,7 @@
 #endif
 
 #ifndef MOTORAPP_CURRENT_MIN_WINDOW_TICKS
-#define MOTORAPP_CURRENT_MIN_WINDOW_TICKS (450U)
+#define MOTORAPP_CURRENT_MIN_WINDOW_TICKS (420U)
 #endif
 
 #ifndef MOTORAPP_CURRENT_OFFSET_SAMPLES
@@ -120,8 +120,9 @@
 #define MOTORAPP_SCTRL_STOP_EPS (0.01f)
 #endif
 
+/* 速度指令限制 */
 #ifndef MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S
-#define MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S (500.0f)
+#define MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S (1600.0f)
 #endif
 
 /* Iq LUT 补偿使能开关（前馈）：低速实验用（查表 + 线性插值） */
@@ -147,20 +148,20 @@
 
 /* S-Curve轨迹规划宏开关 */
 #ifndef MOTORAPP_SPD_REF_S_CURVE_ENABLE
-#define MOTORAPP_SPD_REF_S_CURVE_ENABLE (0U)
+#define MOTORAPP_SPD_REF_S_CURVE_ENABLE (1U)
 #endif
 
 #ifndef MOTORAPP_SPD_REF_A_MAX_RAD_S2
-#define MOTORAPP_SPD_REF_A_MAX_RAD_S2 (2000.0f)
+#define MOTORAPP_SPD_REF_A_MAX_RAD_S2 (500.0f)
 #endif
 
 #ifndef MOTORAPP_SPD_REF_J_MAX_RAD_S3
-#define MOTORAPP_SPD_REF_J_MAX_RAD_S3 (20000.0f)
+#define MOTORAPP_SPD_REF_J_MAX_RAD_S3 (5000.0f)
 #endif
 
 /* 轨迹发生器作为P控制器，速度差->期望加速度 比例系数 */
 #ifndef MOTORAPP_SPD_REF_K_A
-#define MOTORAPP_SPD_REF_K_A (50.0f)
+#define MOTORAPP_SPD_REF_K_A (2.0f)
 #endif
 
 /* 电流环输出，电压矢量限幅(母线电压标幺值) */
@@ -185,12 +186,35 @@
 #define MOTORAPP_MT6835_REG_BW_BITS (7U)
 #endif
 
+#ifndef MOTORAPP_MT6835_EEPROM_QUIET_S
+#define MOTORAPP_MT6835_EEPROM_QUIET_S (8.0f)
+#endif
+
+#define MOTORAPP_MT6835_EEPROM_QUIET_TICKS ((uint32_t)(MOTORAPP_CTRL_HZ * MOTORAPP_MT6835_EEPROM_QUIET_S))
+
 #ifndef MOTORAPP_ENCODER_READ_DIV
 /* Encoder read rate inside ADC ISR: enc_hz = CTRL_HZ / DIV. DIV=1 -> 20kHz. */
 #define MOTORAPP_ENCODER_READ_DIV (1U) /* ADC 中断内的编码器读取频率 */
 #endif
 
+#ifndef MOTORAPP_THETA_CTRL_PREDICT_ENABLE
+/* 1: theta_ctrl = theta_meas + omega_e * Tcomp, only for current loop control frame. */
+#define MOTORAPP_THETA_CTRL_PREDICT_ENABLE (1U)
+#endif
+
+#ifndef MOTORAPP_THETA_CTRL_TCOMP_SCALE
+/* Fine-tune around one encoder pipeline period; 1.0f means full encoder period compensation. */
+#define MOTORAPP_THETA_CTRL_TCOMP_SCALE (0.9f)
+#endif
+
+#ifndef MOTORAPP_THETA_CTRL_TCOMP_S
+#define MOTORAPP_THETA_CTRL_TCOMP_S                                                                                            \
+    (MOTORAPP_THETA_CTRL_TCOMP_SCALE * (((float)MOTORAPP_ENCODER_READ_DIV) * (1.0f / MOTORAPP_CTRL_HZ)))
+#endif
+
 // static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2);
+
+static volatile uint32_t g_mt6835_quiet_ticks = 0U;
 
 static float MotorApp_Wrap2Pi(float x)
 {
@@ -221,16 +245,52 @@ static float MotorApp_WrapPi(float x)
     return x;
 }
 
-/* 当前读取的机械角度转换成当前转子的真实电角度*/
-static float MotorApp_ElecAngleRad(const MotorApp *ctx)
+/* 机械角度转换为双变换坐标系下的电角度 */
+static float MotorApp_ElecAngleFromMechRad(const MotorApp *ctx, float mech_rad)
 {
     if (ctx == 0)
     {
         return 0.0f;
     }
 
-    const float theta_e = ((float)ctx->elec_dir * ctx->calib.p.pole_pairs * ctx->pos_mech_rad) + ctx->elec_zero_offset_rad;
+    const float theta_e = ((float)ctx->elec_dir * ctx->calib.p.pole_pairs * mech_rad) + ctx->elec_zero_offset_rad;
     return MotorApp_Wrap2Pi(theta_e);
+}
+
+/* 电角度前馈补偿值 */
+static float MotorApp_ThetaCtrlDeltaRad(const MotorApp *ctx)
+{
+    if (ctx == 0)
+    {
+        return 0.0f;
+    }
+
+#if (MOTORAPP_THETA_CTRL_PREDICT_ENABLE != 0U)
+    const float omega_e_rad_s = ctx->calib.p.pole_pairs * ctx->dbg_omega_pll_rad_s;
+    return omega_e_rad_s * MOTORAPP_THETA_CTRL_TCOMP_S;
+#else
+    return 0.0f;
+#endif
+}
+
+/* 计算经过前馈预测补偿后的控制用电角度 */
+static float MotorApp_ElecAngleCtrlRad(const MotorApp *ctx)
+{
+    if (ctx == 0)
+    {
+        return 0.0f;
+    }
+
+    /* 计算当前的实测电角度（包含机械偏置和极对数转换）*/
+    const float theta_e_meas = MotorApp_ElecAngleFromMechRad(ctx, ctx->pos_mech_rad);
+
+    /* 在实测值基础上累加前馈补偿量，并进行 2Pi 归一化 */
+    return MotorApp_Wrap2Pi(theta_e_meas + MotorApp_ThetaCtrlDeltaRad(ctx));
+}
+
+static uint8_t MotorApp_Mt6835QuietActive(void)
+{
+    return (g_mt6835_quiet_ticks != 0U) ? 1U : 0U;
 }
 
 static void MotorApp_CalibStart(MotorApp *ctx)
@@ -289,7 +349,7 @@ static void MotorApp_CalibAbort(MotorApp *ctx)
     (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
 }
 
-/* 通过给定ud uq计算三路pwm占空比并改变对应CCR值 */
+/* 将逻辑枚举(AB/AC)翻译成真实的 ADC Channel 宏 */
 static void MotorApp_MapCurrentPairChannels(CurrentSensePair pair, uint32_t *adc1_ch, uint32_t *adc2_ch)
 {
     if ((adc1_ch == 0) || (adc2_ch == 0))
@@ -318,6 +378,7 @@ static void MotorApp_MapCurrentPairChannels(CurrentSensePair pair, uint32_t *adc
     }
 }
 
+/* 将新选出的 pair 更新到 ADC 硬件通道映射，并覆盖 ctx->i_pair_active */
 static void MotorApp_ProgramCurrentPair(MotorApp *ctx, CurrentSensePair pair)
 {
     uint32_t adc1_ch = 0U;
@@ -330,9 +391,12 @@ static void MotorApp_ProgramCurrentPair(MotorApp *ctx, CurrentSensePair pair)
 
     MotorApp_MapCurrentPairChannels(pair, &adc1_ch, &adc2_ch);
     BspAdcInjPair_SetRank1Channels(&ctx->adc_inj, adc1_ch, adc2_ch);
+
+    /* 把配好的 pair 存进全局变量 */
     ctx->i_pair_active = pair;
 }
 
+/* 通过给定ud uq计算三路pwm占空比并改变对应CCR值 */
 static void MotorApp_OutputVdqSc(MotorApp *ctx, float ud, float uq, float sin_theta_e, float cos_theta_e)
 {
     if (ctx == 0)
@@ -373,6 +437,8 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
     ctx->last_host_cmd = *cmd;
     ctx->last_host_cmd_tick_ms = HAL_GetTick();
 
+    const uint8_t mt6835_quiet = MotorApp_Mt6835QuietActive();
+
     switch (cmd->op)
     {
     case 'P':
@@ -382,6 +448,10 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
     case 'V':
+        if (mt6835_quiet != 0U)
+        {
+            break;
+        }
         if ((cmd->has_value != 0U) && (fabsf(cmd->value) > MOTORAPP_SCTRL_STOP_EPS))
         {
             if (ctx->fault_overcurrent != 0U)
@@ -408,18 +478,28 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
                 omega = -MOTORAPP_SCTRL_OMEGA_LIMIT_RAD_S;
             }
 
+            const uint8_t restart_speed_path = ((ctx->spd_loop_enabled == 0U) || (ctx->i_loop_enabled == 0U)) ? 1U : 0U;
+
             ctx->target_vel_rad_s = omega;
-            ctx->spd_loop_enabled = 1U;
             ctx->spd_loop_div_countdown = 0U;
-            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
-            SCurveVel_Reset(&ctx->spd_ref_plan, ctx->dbg_omega_pll_rad_s);
             SignalLogSweep_Reset(&ctx->iq_sweep);
+
+            if (restart_speed_path != 0U)
+            {
+                /* Keep the planner/PI continuous across target changes.
+                 * Re-seed only when speed mode is entered from a stopped state. */
+                FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+                SCurveVel_Reset(&ctx->spd_ref_plan, ctx->dbg_omega_pll_rad_s);
+                ctx->id_ref_a = 0.0f;
+                ctx->iq_ref_a = 0.0f;
+            }
+
+            /* 所有状态重置完毕后，最后再放开中断权限 */
+            ctx->spd_loop_enabled = 1U;
+
             ctx->iq_sweep_request_pending = 0U;
             ctx->iq_sweep_div_countdown = 0U;
             ctx->iq_sweep_a = 0.0f;
-
-            ctx->id_ref_a = 0.0f;
-            ctx->iq_ref_a = 0.0f;
 
             ctx->vtest_active = 0U;
             MotorCalib_Abort(&ctx->calib);
@@ -450,6 +530,10 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
     case 'C':
+        if (mt6835_quiet != 0U)
+        {
+            break;
+        }
         ctx->calib_request = (cmd->has_value != 0U) ? (uint8_t)cmd->value : 1U;
         ctx->calib_request_pending = 1U;
         break;
@@ -464,6 +548,10 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
         }
         break;
     case 'I':
+        if (mt6835_quiet != 0U)
+        {
+            break;
+        }
         if (cmd->has_value != 0U)
         {
             if (ctx->fault_overcurrent != 0U)
@@ -536,12 +624,32 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 
     case 'M':
     {
-        /* M0: read MT6835 reg 0x011 (filter BW), M1: write BW[2:0] then readback verify */
-        const uint8_t do_write = ((cmd->has_value != 0U) && (cmd->value != 0.0f)) ? 1U : 0U;
+        /* M0: read reg 0x011, M1: write BW[2:0], M2: EEPROM burn */
+        uint8_t subcmd = 0U;
+        if (cmd->has_value != 0U)
+        {
+            if (cmd->value >= 1.5f)
+            {
+                subcmd = 2U;
+            }
+            else if (cmd->value >= 0.5f)
+            {
+                subcmd = 1U;
+            }
+        }
+
+        if (mt6835_quiet != 0U)
+        {
+            ctx->mt6835_reg_op = 6U;
+            ctx->stream_page = 4U;
+            break;
+        }
 
         /* Pause encoder DMA pipeline to avoid SPI3 bus conflict with blocking register access. */
         ctx->enc_dma_enable = 0U;
         const uint32_t t0 = HAL_GetTick();
+
+        /* 5ms 等待总线空闲，超时标记数据无效，打印错误码 */
         while ((ctx->enc_dma.busy != 0U) && ((HAL_GetTick() - t0) < 5U))
         {
         }
@@ -554,37 +662,81 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
             break;
         }
 
-        uint8_t v = 0U;
-        if (Mt6835_ReadReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, &v) == 0U)
+        if (subcmd == 2U)
         {
-            ctx->mt6835_reg011_valid = 0U;
-            ctx->mt6835_reg_op = 3U;
-            ctx->enc_dma_enable = 1U;
-            ctx->stream_page = 4U;
-            break;
-        }
+            uint8_t ack = 0U;
+            const uint8_t ok = Mt6835_BurnEeprom(&ctx->encoder, &ack);
 
-        ctx->mt6835_reg011 = v;
-        ctx->mt6835_reg011_valid = 1U;
-        ctx->mt6835_reg_op = 1U;
+            ctx->i_loop_enable_pending = 0U;
+            ctx->i_loop_enabled = 0U;
+            ctx->spd_loop_enabled = 0U;
+            ctx->target_vel_rad_s = 0.0f;
+            ctx->id_ref_a = 0.0f;
+            ctx->iq_ref_a = 0.0f;
+            ctx->spd_loop_div_countdown = 0U;
+            ctx->calib_request = 0U;
+            ctx->calib_request_pending = 0U;
+            FocSpeedCtrl_Reset(&ctx->spd_ctrl);
+            SCurveVel_Reset(&ctx->spd_ref_plan, 0.0f);
+            SignalLogSweep_Reset(&ctx->iq_sweep);
+            ctx->iq_sweep_request_pending = 0U;
+            ctx->iq_sweep_div_countdown = 0U;
+            ctx->iq_sweep_a = 0.0f;
+            ctx->vtest_active = 0U;
+            MotorCalib_Abort(&ctx->calib);
+            FocCurrentCtrl_Reset(&ctx->i_ctrl);
+            (void)BspTim1Pwm_DisableOutputs(&ctx->pwm);
 
-        if (do_write != 0U)
-        {
-            const uint8_t new_v = (uint8_t)((v & 0xF8U) | ((uint8_t)MOTORAPP_MT6835_REG_BW_BITS & 0x07U));
-            uint8_t ok = Mt6835_WriteReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, new_v);
-            uint8_t rd = 0U;
-            ok = ((ok != 0U) && (Mt6835_ReadReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, &rd) != 0U)) ? 1U : 0U;
-            ctx->mt6835_reg011 = rd;
+            ctx->mt6835_reg011 = ack;
             ctx->mt6835_reg011_valid = ok;
-            ctx->mt6835_reg_op = (ok != 0U) ? 2U : 3U;
+            ctx->mt6835_reg_op = (ok != 0U) ? 4U : 5U;
+            if (ok != 0U)
+            {
+                g_mt6835_quiet_ticks = MOTORAPP_MT6835_EEPROM_QUIET_TICKS;
+            }
+        }
+        else
+        {
+            uint8_t v = 0U;
+            if (Mt6835_ReadReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, &v) == 0U)
+            {
+                ctx->mt6835_reg011_valid = 0U;
+                ctx->mt6835_reg_op = 3U;
+                ctx->enc_dma_enable = 1U;
+                ctx->stream_page = 4U;
+                break;
+            }
+
+            ctx->mt6835_reg011 = v;
+            ctx->mt6835_reg011_valid = 1U;
+            ctx->mt6835_reg_op = 1U;
+
+            if (subcmd == 1U)
+            {
+                const uint8_t new_v = (uint8_t)((v & 0xF8U) | ((uint8_t)MOTORAPP_MT6835_REG_BW_BITS & 0x07U));
+                uint8_t ok = Mt6835_WriteReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, new_v);
+                uint8_t rd = 0U;
+                ok = ((ok != 0U) && (Mt6835_ReadReg8(&ctx->encoder, (uint16_t)MOTORAPP_MT6835_REG_BW_ADDR, &rd) != 0U)) ? 1U
+                                                                                                                        : 0U;
+                ctx->mt6835_reg011 = rd;
+                ctx->mt6835_reg011_valid = ok;
+                ctx->mt6835_reg_op = (ok != 0U) ? 2U : 3U;
+            }
         }
 
-        ctx->enc_dma_enable = 1U;
+        if (g_mt6835_quiet_ticks == 0U)
+        {
+            ctx->enc_dma_enable = 1U;
+        }
         ctx->stream_page = 4U;
     }
     break;
 
     case 'F':
+        if (mt6835_quiet != 0U)
+        {
+            break;
+        }
         /* F1: start log-sweep injection on Iq_cmd, F0: stop */
         ctx->iq_sweep_request = ((cmd->has_value == 0U) || (cmd->value != 0.0f)) ? 1U : 0U;
         ctx->iq_sweep_request_pending = 1U;
@@ -593,6 +745,10 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 
         /* 将转子强拖到U相 */
     case 'T':
+        if (mt6835_quiet != 0U)
+        {
+            break;
+        }
         if ((cmd->has_value != 0U) && (cmd->value == 0.0f))
         {
             ctx->spd_loop_enabled = 0U;
@@ -655,6 +811,8 @@ static void MotorApp_HandleHostCmd(MotorApp *ctx, const HostCmd *cmd)
 static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
 {
     MotorApp *ctx = (MotorApp *)user;
+
+    /* 锁存本轮ADC采样通道组合 */
     const CurrentSensePair sampled_pair = (ctx != 0) ? ctx->i_pair_active : CURRENT_SENSE_PAIR_AB;
     if (ctx == 0)
     {
@@ -670,7 +828,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* 心跳监控（Telemetry / Profiling）变量 */
     ctx->adc_isr_count++;
 
-    /* 打印分频计数器 */
+    /* 数据流打印分频计数器 */
 #if (MOTORAPP_STREAM_USE_ISR_DIV != 0U)
 #if (MOTORAPP_STREAM_DIV > 0U)
     if (ctx->stream_div_countdown == 0U)
@@ -728,7 +886,18 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* Start next encoder DMA transaction (frequency divider) */
 #if (MOTORAPP_ENCODER_READ_DIV > 0U)
     /* 主循环是否允许读编码器(写编码器寄存器时冻结) */
-    if (ctx->enc_dma_enable == 0U)
+    /* 编码器 EEPROM 烧录空闲倒计时 */
+    if (g_mt6835_quiet_ticks != 0U)
+    {
+        g_mt6835_quiet_ticks--;
+        ctx->enc_div_countdown = 0U;
+        if (g_mt6835_quiet_ticks == 0U)
+        {
+            ctx->enc_dma_enable = 1U;
+        }
+    }
+    /* 写 MT6835 寄存器时冻结 */
+    else if (ctx->enc_dma_enable == 0U)
     {
         ctx->enc_div_countdown = 0U;
     }
@@ -742,6 +911,18 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         ctx->enc_div_countdown--;
     }
 #endif
+
+    ctx->theta_e_meas_rad = MotorApp_ElecAngleFromMechRad(ctx, ctx->pos_mech_rad);
+    ctx->theta_e_ctrl_rad = MotorApp_ElecAngleCtrlRad(ctx);
+
+    /* 原始电角度 */
+    ctx->dbg_theta_e_meas = ctx->theta_e_meas_rad;
+
+    /* 经过前馈预测补偿后的控制用电角度 */
+    ctx->dbg_theta_e_ctrl = ctx->theta_e_ctrl_rad;
+
+    /* 电角度前馈补偿值_Deg*/
+    ctx->dbg_theta_e_delta_deg = MotorApp_ThetaCtrlDeltaRad(ctx) * (180.0f / 3.14159265359f);
 
     /* 电流零偏校准状态机，先校准U V相电流采样的零偏，后切换状态校准W相 */
     if ((ctx->i_offset_ready == 0U) && (ctx->pwm.outputs_enabled == 0U))
@@ -775,6 +956,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
     /* 原始数据转实际物理电流（安培） */
     if (ctx->i_offset_ready != 0U)
     {
+        /* offset_raw[3] = {... } */
         const uint16_t offset_raw[CURRENT_SENSE_PHASE_COUNT] = {
             ctx->i_u_offset_raw,
             ctx->i_v_offset_raw,
@@ -844,6 +1026,9 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         float c = 1.0f;
         /* 处于校准状态，计算当前设定角度的 sin 和 cos */
         BspTrig_SinCos(cmd.theta_e, &s, &c);
+        ctx->dbg_ud_pu = cmd.ud;
+        ctx->dbg_uq_pu = cmd.uq;
+        ctx->dbg_u_mag_pu = sqrtf((cmd.ud * cmd.ud) + (cmd.uq * cmd.uq));
 
         MotorApp_OutputVdqSc(ctx, cmd.ud, cmd.uq, s, c);
     }
@@ -855,7 +1040,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
             ctx->iq_sweep_request_pending = 0U;
             if (ctx->iq_sweep_request != 0U)
             {
-                /* 扫频信号计算频率 */
+/* 扫频信号分频 */
 #if (MOTORAPP_LOG_SWEEP_DIV > 0U)
                 const float dt_sweep = ((float)MOTORAPP_LOG_SWEEP_DIV) * (1.0f / MOTORAPP_CTRL_HZ);
 #else
@@ -971,7 +1156,7 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         }
         ctx->dbg_iq_cmd_a = iq_cmd_a;
 
-        const float theta_e = MotorApp_ElecAngleRad(ctx);
+        const float theta_e = ctx->theta_e_ctrl_rad;
         float s = 0.0f;
         float c = 1.0f;
         BspTrig_SinCos(theta_e, &s, &c);
@@ -989,18 +1174,44 @@ static void MotorApp_OnAdcPair(void *user, uint16_t adc1, uint16_t adc2)
         ctx->dbg_uq = iout.uq_pu;
         ctx->dbg_id_a = iout.id_a;
         ctx->dbg_iq_a = iout.iq_a;
+
+        /* 占空比生成的归一化 */
+        /* pu-Per Unit 标幺值 */
         ctx->dbg_ud_pu = iout.ud_pu;
         ctx->dbg_uq_pu = iout.uq_pu;
 
+        /* 交、直轴电压矢量和 */
+        ctx->dbg_u_mag_pu = sqrtf((iout.ud_pu * iout.ud_pu) + (iout.uq_pu * iout.uq_pu));
+
         MotorApp_OutputVdqSc(ctx, iout.ud_pu, iout.uq_pu, s, c);
     }
+    /* d轴开环强拖 */
     else if (ctx->vtest_active != 0U)
     {
+        ctx->dbg_theta_e = 0.0f;
+        ctx->dbg_ud = ctx->vtest_ud;
+        ctx->dbg_uq = ctx->vtest_uq;
+        ctx->dbg_ud_pu = ctx->vtest_ud;
+        ctx->dbg_uq_pu = ctx->vtest_uq;
+        ctx->dbg_u_mag_pu = sqrtf((ctx->vtest_ud * ctx->vtest_ud) + (ctx->vtest_uq * ctx->vtest_uq));
         MotorApp_OutputVdqSc(ctx, ctx->vtest_ud, ctx->vtest_uq, 0.0f, 1.0f);
     }
     else if (ctx->pwm.outputs_enabled != 0U)
     {
+        ctx->dbg_ud = 0.0f;
+        ctx->dbg_uq = 0.0f;
+        ctx->dbg_ud_pu = 0.0f;
+        ctx->dbg_uq_pu = 0.0f;
+        ctx->dbg_u_mag_pu = 0.0f;
         BspTim1Pwm_SetNeutral(&ctx->pwm);
+    }
+    else
+    {
+        ctx->dbg_ud = 0.0f;
+        ctx->dbg_uq = 0.0f;
+        ctx->dbg_ud_pu = 0.0f;
+        ctx->dbg_uq_pu = 0.0f;
+        ctx->dbg_u_mag_pu = 0.0f;
     }
 
     const MotorCalibState st = MotorCalib_State(&ctx->calib);
@@ -1109,8 +1320,8 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
         .min_move_rad = 0.2f,                               // 拖动阶段最小机械移动角度
     };
     MotorCalib_Init(&ctx->calib, &calib);
-    ctx->elec_dir = 1;
-    ctx->elec_zero_offset_rad = 0.0f;
+    ctx->elec_dir = -1;
+    ctx->elec_zero_offset_rad = 0.620399f;
 
     ctx->last_stream_tick_ms = HAL_GetTick();
     ctx->stream_pending = 0U;
@@ -1119,6 +1330,7 @@ void MotorApp_Init(MotorApp *ctx, UART_HandleTypeDef *huart, SPI_HandleTypeDef *
     ctx->vtest_active = 0U;
     ctx->vtest_ud = 0.0f;
     ctx->vtest_uq = 0.0f;
+    g_mt6835_quiet_ticks = 0U;
 }
 
 void MotorApp_Loop(MotorApp *ctx)
@@ -1297,8 +1509,25 @@ void MotorApp_Loop(MotorApp *ctx)
 
     if (ctx->stream_page == 10U)
     {
+        /* 本周期ADC采样通道组、下周期ADC采样通道组、采样通道有效性、本周期扇区 */
         JustFloat_Pack4((float)ctx->dbg_i_pair_active, (float)ctx->dbg_i_pair_next, (float)ctx->dbg_i_pair_valid,
                         (float)ctx->dbg_svm_sector, ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 11U)
+    {
+        /* spi通讯补偿前电角度、spi通讯补偿后电角度、补偿电角度增量、电压矢量和 */
+        JustFloat_Pack4(ctx->dbg_theta_e_meas, ctx->dbg_theta_e_ctrl, ctx->dbg_theta_e_delta_deg, ctx->dbg_u_mag_pu,
+                        ctx->tx_frame);
+        (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
+        return;
+    }
+
+    if (ctx->stream_page == 12U)
+    {
+        JustFloat_Pack4(ctx->dbg_ud_pu, ctx->dbg_uq_pu, ctx->dbg_u_mag_pu, ctx->dbg_theta_e_delta_deg, ctx->tx_frame);
         (void)BspUartDma_Send(&ctx->uart, ctx->tx_frame, (uint16_t)sizeof(ctx->tx_frame));
         return;
     }
